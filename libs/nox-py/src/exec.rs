@@ -8,6 +8,7 @@ use nox::{CompFn, Noxpr};
 use serde::{Deserialize, Serialize};
 
 use crate::component::Component;
+use crate::cranelift_exec::CraneliftWorldExec;
 use crate::error::Error;
 use crate::iree_exec::IREEWorldExec;
 use crate::jax_exec::JaxWorldExec;
@@ -65,6 +66,7 @@ impl<C: Component> ComponentArray<C> {
 pub enum WorldExec {
     Iree(Box<IREEWorldExec>),
     Jax(Box<JaxWorldExec>),
+    Cranelift(Box<CraneliftWorldExec>),
 }
 
 impl WorldExec {
@@ -72,6 +74,7 @@ impl WorldExec {
         match self {
             Self::Iree(e) => e.run(),
             Self::Jax(e) => e.run(),
+            Self::Cranelift(e) => e.run(),
         }
     }
 
@@ -79,6 +82,7 @@ impl WorldExec {
         match self {
             Self::Iree(e) => &e.world,
             Self::Jax(e) => &e.world,
+            Self::Cranelift(e) => &e.world,
         }
     }
 
@@ -86,6 +90,7 @@ impl WorldExec {
         match self {
             Self::Iree(e) => &mut e.world,
             Self::Jax(e) => &mut e.world,
+            Self::Cranelift(e) => &mut e.world,
         }
     }
 
@@ -93,6 +98,7 @@ impl WorldExec {
         match self {
             Self::Iree(e) => e.profile(),
             Self::Jax(e) => e.profile(),
+            Self::Cranelift(e) => e.profile(),
         }
     }
 
@@ -100,6 +106,7 @@ impl WorldExec {
         match self {
             Self::Iree(e) => &mut e.profiler,
             Self::Jax(e) => &mut e.profiler,
+            Self::Cranelift(e) => &mut e.profiler,
         }
     }
 }

@@ -1,0 +1,347 @@
+use std::collections::HashMap;
+use std::fmt;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ElementType {
+    F64,
+    F32,
+    I1,
+    I32,
+    I64,
+    UI32,
+    UI64,
+}
+
+impl ElementType {
+    pub fn byte_size(self) -> usize {
+        match self {
+            ElementType::F64 => 8,
+            ElementType::F32 => 4,
+            ElementType::I1 => 1,
+            ElementType::I32 => 4,
+            ElementType::I64 => 8,
+            ElementType::UI32 => 4,
+            ElementType::UI64 => 8,
+        }
+    }
+}
+
+impl fmt::Display for ElementType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ElementType::F64 => write!(f, "f64"),
+            ElementType::F32 => write!(f, "f32"),
+            ElementType::I1 => write!(f, "i1"),
+            ElementType::I32 => write!(f, "i32"),
+            ElementType::I64 => write!(f, "i64"),
+            ElementType::UI32 => write!(f, "ui32"),
+            ElementType::UI64 => write!(f, "ui64"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct TensorType {
+    pub shape: Vec<i64>,
+    pub element_type: ElementType,
+}
+
+impl TensorType {
+    pub fn scalar(element_type: ElementType) -> Self {
+        Self {
+            shape: vec![],
+            element_type,
+        }
+    }
+
+    pub fn num_elements(&self) -> usize {
+        self.shape.iter().product::<i64>().max(1) as usize
+    }
+
+    pub fn byte_size(&self) -> usize {
+        self.num_elements() * self.element_type.byte_size()
+    }
+
+    pub fn is_scalar(&self) -> bool {
+        self.shape.is_empty()
+    }
+
+    pub fn rank(&self) -> usize {
+        self.shape.len()
+    }
+}
+
+impl fmt::Display for TensorType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "tensor<")?;
+        for (i, d) in self.shape.iter().enumerate() {
+            if i > 0 {
+                write!(f, "x")?;
+            }
+            write!(f, "{d}")?;
+        }
+        if !self.shape.is_empty() {
+            write!(f, "x")?;
+        }
+        write!(f, "{}>", self.element_type)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ValueId(pub u32);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompareDirection {
+    Eq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompareType {
+    Float,
+    Signed,
+    Unsigned,
+    TotalOrder,
+}
+
+#[derive(Debug, Clone)]
+pub enum ScalarValue {
+    F64(f64),
+    F32(f32),
+    I1(bool),
+    I32(i32),
+    I64(i64),
+    UI32(u32),
+}
+
+impl ScalarValue {
+    pub fn as_f64(&self) -> f64 {
+        match self {
+            ScalarValue::F64(v) => *v,
+            ScalarValue::F32(v) => *v as f64,
+            ScalarValue::I64(v) => *v as f64,
+            ScalarValue::I32(v) => *v as f64,
+            ScalarValue::UI32(v) => *v as f64,
+            ScalarValue::I1(v) => {
+                if *v {
+                    1.0
+                } else {
+                    0.0
+                }
+            }
+        }
+    }
+
+    pub fn as_i64(&self) -> i64 {
+        match self {
+            ScalarValue::I64(v) => *v,
+            ScalarValue::I32(v) => *v as i64,
+            ScalarValue::UI32(v) => *v as i64,
+            ScalarValue::F64(v) => *v as i64,
+            ScalarValue::F32(v) => *v as i64,
+            ScalarValue::I1(v) => i64::from(*v),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum ConstantValue {
+    DenseScalar(ScalarValue),
+    DenseArray(Vec<ScalarValue>),
+    DenseSplat(ScalarValue, TensorType),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReduceOp {
+    Add,
+    Minimum,
+    Maximum,
+}
+
+#[derive(Debug, Clone)]
+pub struct DotDims {
+    pub lhs_contracting: Vec<i64>,
+    pub rhs_contracting: Vec<i64>,
+    pub lhs_batch: Vec<i64>,
+    pub rhs_batch: Vec<i64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct GatherDims {
+    pub offset_dims: Vec<i64>,
+    pub collapsed_slice_dims: Vec<i64>,
+    pub start_index_map: Vec<i64>,
+    pub index_vector_dim: i64,
+}
+
+#[derive(Debug, Clone)]
+pub enum Instruction {
+    Constant {
+        value: ConstantValue,
+    },
+    Add {
+        lhs: ValueId,
+        rhs: ValueId,
+    },
+    Subtract {
+        lhs: ValueId,
+        rhs: ValueId,
+    },
+    Multiply {
+        lhs: ValueId,
+        rhs: ValueId,
+    },
+    Divide {
+        lhs: ValueId,
+        rhs: ValueId,
+    },
+    Negate {
+        operand: ValueId,
+    },
+    Sqrt {
+        operand: ValueId,
+    },
+    Maximum {
+        lhs: ValueId,
+        rhs: ValueId,
+    },
+    Compare {
+        lhs: ValueId,
+        rhs: ValueId,
+        direction: CompareDirection,
+        compare_type: CompareType,
+    },
+    Select {
+        cond: ValueId,
+        on_true: ValueId,
+        on_false: ValueId,
+    },
+    Reshape {
+        operand: ValueId,
+    },
+    BroadcastInDim {
+        operand: ValueId,
+        broadcast_dims: Vec<i64>,
+    },
+    Slice {
+        operand: ValueId,
+        start_indices: Vec<i64>,
+        limit_indices: Vec<i64>,
+    },
+    Concatenate {
+        operands: Vec<ValueId>,
+        dimension: i64,
+    },
+    DotGeneral {
+        lhs: ValueId,
+        rhs: ValueId,
+        dims: DotDims,
+    },
+    Reduce {
+        operand: ValueId,
+        init: ValueId,
+        op: ReduceOp,
+        dimensions: Vec<i64>,
+    },
+    Convert {
+        operand: ValueId,
+    },
+    BitcastConvert {
+        operand: ValueId,
+    },
+    Iota {
+        dimension: i64,
+    },
+    Xor {
+        lhs: ValueId,
+        rhs: ValueId,
+    },
+    Or {
+        lhs: ValueId,
+        rhs: ValueId,
+    },
+    And {
+        lhs: ValueId,
+        rhs: ValueId,
+    },
+    ShiftLeft {
+        lhs: ValueId,
+        rhs: ValueId,
+    },
+    ShiftRightLogical {
+        lhs: ValueId,
+        rhs: ValueId,
+    },
+    Call {
+        callee: String,
+        args: Vec<ValueId>,
+    },
+    While {
+        cond_body: Vec<InstrResult>,
+        loop_body: Vec<InstrResult>,
+        init_values: Vec<ValueId>,
+    },
+    Case {
+        index: ValueId,
+        branches: Vec<Vec<InstrResult>>,
+    },
+    Return {
+        operands: Vec<ValueId>,
+    },
+    ErfInv {
+        operand: ValueId,
+    },
+    Gather {
+        operand: ValueId,
+        indices: ValueId,
+        dims: GatherDims,
+        slice_sizes: Vec<i64>,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct InstrResult {
+    pub values: Vec<(ValueId, TensorType)>,
+    pub instr: Instruction,
+}
+
+#[derive(Debug, Clone)]
+pub struct FuncDef {
+    pub name: String,
+    pub is_public: bool,
+    pub params: Vec<(ValueId, TensorType)>,
+    pub result_types: Vec<TensorType>,
+    pub body: Vec<InstrResult>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Module {
+    pub functions: Vec<FuncDef>,
+    pub func_index: HashMap<String, usize>,
+}
+
+impl Module {
+    pub fn new(functions: Vec<FuncDef>) -> Self {
+        let func_index = functions
+            .iter()
+            .enumerate()
+            .map(|(i, f)| (f.name.clone(), i))
+            .collect();
+        Self {
+            functions,
+            func_index,
+        }
+    }
+
+    pub fn get_func(&self, name: &str) -> Option<&FuncDef> {
+        self.func_index.get(name).map(|&i| &self.functions[i])
+    }
+
+    pub fn main_func(&self) -> Option<&FuncDef> {
+        self.get_func("main")
+    }
+}

@@ -51,6 +51,7 @@ video-stream-db/
 logstream-db/
 testvids/
 *.log
+**/testdata/*
 
 # macOS debug symbols
 *.dSYM/

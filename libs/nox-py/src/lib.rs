@@ -9,6 +9,8 @@ use pyo3::prelude::*;
 
 pub mod archetype;
 pub mod component;
+pub mod cranelift_compile;
+pub mod cranelift_exec;
 pub mod dyn_array;
 pub mod entity;
 pub mod error;

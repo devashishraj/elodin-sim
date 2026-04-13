@@ -44,6 +44,8 @@ pub enum Error {
     IreeRuntimeError(String),
     #[error("unsupported element type for JAX backend: {0}")]
     UnsupportedDtype(String),
+    #[error("cranelift backend: {0}")]
+    CraneliftNotImplemented(String),
 }
 
 impl From<Error> for PyErr {

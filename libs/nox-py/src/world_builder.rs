@@ -159,6 +159,7 @@ fn is_snake_case(s: &str) -> bool {
 enum BackendEngine {
     Iree,
     Jax,
+    Cranelift,
 }
 
 fn validate_rates(
@@ -213,8 +214,9 @@ fn parse_backend_config(
         "metal" => Ok((BackendEngine::Iree, "metal", false)),
         "jax-cpu" | "jax" => Ok((BackendEngine::Jax, "cpu", false)),
         "jax-gpu" => Ok((BackendEngine::Jax, "gpu", true)),
+        "cranelift" => Ok((BackendEngine::Cranelift, "cpu", false)),
         other => Err(Error::UnknownCommand(format!(
-            "unknown backend '{other}': expected one of 'iree-cpu', 'iree-gpu', 'iree-inline', 'local-task', 'local-sync', 'jax-cpu', 'jax-gpu'"
+            "unknown backend '{other}': expected one of 'iree-cpu', 'iree-gpu', 'iree-inline', 'local-task', 'local-sync', 'jax-cpu', 'jax-gpu', 'cranelift'"
         ))),
     }
 }
@@ -874,6 +876,7 @@ impl WorldBuilder {
                             }
                         }
                         WorldExec::Jax(_) => String::from("JAX backend profile"),
+                        WorldExec::Cranelift(_) => String::from("Cranelift backend profile"),
                     };
 
                     // Save HLO dump to output directory
@@ -1098,6 +1101,7 @@ impl WorldBuilder {
                     let arg_ids: Vec<_> = match &compiled_exec {
                         WorldExec::Iree(e) => e.tick_exec.metadata.arg_ids.clone(),
                         WorldExec::Jax(e) => e.tick_exec.metadata.arg_ids.clone(),
+                        WorldExec::Cranelift(e) => e.tick_exec.metadata.arg_ids.clone(),
                     };
                     for id in &arg_ids {
                         if let Some(col) = compiled_exec.world().column_by_id(*id) {
@@ -1613,6 +1617,14 @@ impl WorldBuilder {
                 let mut exec = JaxWorldExec::new(world, tick_exec, None);
                 exec.profiler.build.observe(&mut start);
                 Ok(WorldExec::Jax(Box::new(exec)))
+            }
+            BackendEngine::Cranelift => {
+                let tick_exec =
+                    crate::cranelift_compile::compile_cranelift_module(py, &compiled_sys, &world)?;
+                let mut exec =
+                    crate::cranelift_exec::CraneliftWorldExec::new(world, tick_exec, None);
+                exec.profiler.build.observe(&mut start);
+                Ok(WorldExec::Cranelift(Box::new(exec)))
             }
             BackendEngine::Iree => {
                 match compiled_sys.compile_iree_module(

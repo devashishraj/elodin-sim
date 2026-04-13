@@ -72,6 +72,9 @@ directories = "5.0.1"
 
 s10.path = "../s10"
 
+# cranelift backend
+cranelift-mlir.path = "../cranelift-mlir"
+
 # data structures
 smallvec.version = "1.11.2"
 smallvec.features = ["const_generics", "union"]
