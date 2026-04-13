@@ -570,3 +570,161 @@ module @module {
     let out = run_mlir(mlir, &[&in0], &[8]);
     assert_eq!(read_i64s(&out[0])[0], 5);
 }
+
+// ---- Transpose ----
+
+#[test]
+fn test_transpose_2d() {
+    let mlir = r#"
+module @module {
+  func.func public @main(%arg0: tensor<2x3xf64>) -> tensor<3x2xf64> {
+    %0 = stablehlo.transpose %arg0, dims = [1, 0] : (tensor<2x3xf64>) -> tensor<3x2xf64>
+    return %0 : tensor<3x2xf64>
+  }
+}
+"#;
+    // Input: [[1,2,3],[4,5,6]]
+    let in0 = f64_buf(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+    let out = run_mlir(mlir, &[&in0], &[48]);
+    // Expected: [[1,4],[2,5],[3,6]]
+    let result = read_f64s(&out[0]);
+    assert_eq!(result, &[1.0, 4.0, 2.0, 5.0, 3.0, 6.0]);
+}
+
+#[test]
+fn test_transpose_3d() {
+    let mlir = r#"
+module @module {
+  func.func public @main(%arg0: tensor<2x3x4xf64>) -> tensor<3x2x4xf64> {
+    %0 = stablehlo.transpose %arg0, dims = [1, 0, 2] : (tensor<2x3x4xf64>) -> tensor<3x2x4xf64>
+    return %0 : tensor<3x2x4xf64>
+  }
+}
+"#;
+    // Input: 2x3x4 = 24 elements, row-major: group0=[0..12), group1=[12..24)
+    let mut input: Vec<f64> = (0..24).map(|i| i as f64).collect();
+    let in0 = f64_buf(&input);
+    let out = run_mlir(mlir, &[&in0], &[192]);
+    let result = read_f64s(&out[0]);
+    // dims=[1,0,2]: output[j][i][k] = input[i][j][k]
+    // output shape 3x2x4
+    for j in 0..3 {
+        for i in 0..2 {
+            for k in 0..4 {
+                let expected = (i * 3 * 4 + j * 4 + k) as f64;
+                let got = result[j * 2 * 4 + i * 4 + k];
+                assert!(
+                    (got - expected).abs() < 1e-10,
+                    "transpose[{j}][{i}][{k}]: got {got}, expected {expected}"
+                );
+            }
+        }
+    }
+}
+
+// ---- Dynamic slice ----
+
+#[test]
+fn test_dynamic_slice_1d() {
+    let mlir = r#"
+module @module {
+  func.func public @main(%arg0: tensor<5xf64>, %arg1: tensor<i64>) -> tensor<2xf64> {
+    %0 = stablehlo.dynamic_slice %arg0, %arg1, sizes = [2] : (tensor<5xf64>, tensor<i64>) -> tensor<2xf64>
+    return %0 : tensor<2xf64>
+  }
+}
+"#;
+    let in0 = f64_buf(&[10.0, 20.0, 30.0, 40.0, 50.0]);
+    let idx = i64_buf(&[2]);
+    let out = run_mlir(mlir, &[&in0, &idx], &[16]);
+    assert_eq!(read_f64s(&out[0]), &[30.0, 40.0]);
+}
+
+#[test]
+fn test_dynamic_slice_3d() {
+    let mlir = r#"
+module @module {
+  func.func public @main(%arg0: tensor<2x3x4xf64>, %arg1: tensor<i64>, %arg2: tensor<i64>, %arg3: tensor<i64>) -> tensor<1x3x4xf64> {
+    %0 = stablehlo.dynamic_slice %arg0, %arg1, %arg2, %arg3, sizes = [1, 3, 4] : (tensor<2x3x4xf64>, tensor<i64>, tensor<i64>, tensor<i64>) -> tensor<1x3x4xf64>
+    return %0 : tensor<1x3x4xf64>
+  }
+}
+"#;
+    let input: Vec<f64> = (0..24).map(|i| i as f64).collect();
+    let in0 = f64_buf(&input);
+    let idx0 = i64_buf(&[1]);
+    let idx1 = i64_buf(&[0]);
+    let idx2 = i64_buf(&[0]);
+    let out = run_mlir(mlir, &[&in0, &idx0, &idx1, &idx2], &[96]);
+    let result = read_f64s(&out[0]);
+    // Slice starting at [1,0,0] with sizes [1,3,4] = elements 12..24
+    let expected: Vec<f64> = (12..24).map(|i| i as f64).collect();
+    assert_eq!(result, expected);
+}
+
+// ---- Dynamic update slice ----
+
+#[test]
+fn test_dynamic_update_slice_1d() {
+    let mlir = r#"
+module @module {
+  func.func public @main(%arg0: tensor<5xf64>, %arg1: tensor<2xf64>, %arg2: tensor<i64>) -> tensor<5xf64> {
+    %0 = stablehlo.dynamic_update_slice %arg0, %arg1, %arg2 : (tensor<5xf64>, tensor<2xf64>, tensor<i64>) -> tensor<5xf64>
+    return %0 : tensor<5xf64>
+  }
+}
+"#;
+    let base = f64_buf(&[1.0, 2.0, 3.0, 4.0, 5.0]);
+    let update = f64_buf(&[99.0, 100.0]);
+    let idx = i64_buf(&[1]);
+    let out = run_mlir(mlir, &[&base, &update, &idx], &[40]);
+    assert_eq!(read_f64s(&out[0]), &[1.0, 99.0, 100.0, 4.0, 5.0]);
+}
+
+// ---- Gather (row-select) ----
+
+#[test]
+fn test_gather_row_select() {
+    let mlir = r#"
+module @module {
+  func.func public @main(%arg0: tensor<3x4xf64>, %arg1: tensor<2x1xui32>) -> tensor<2x4xf64> {
+    %0 = "stablehlo.gather"(%arg0, %arg1) <{dimension_numbers = #stablehlo.gather<offset_dims = [1], collapsed_slice_dims = [0], start_index_map = [0], index_vector_dim = 1>, indices_are_sorted = false, slice_sizes = array<i64: 1, 4>}> : (tensor<3x4xf64>, tensor<2x1xui32>) -> tensor<2x4xf64>
+    return %0 : tensor<2x4xf64>
+  }
+}
+"#;
+    // operand: [[1,2,3,4],[5,6,7,8],[9,10,11,12]]
+    let operand = f64_buf(&[
+        1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0,
+    ]);
+    // indices: [[2],[0]] -- pick row 2 then row 0
+    let indices: Vec<u8> = [2u32, 0u32].iter().flat_map(|v| v.to_le_bytes()).collect();
+    let out = run_mlir(mlir, &[&operand, &indices], &[64]);
+    let result = read_f64s(&out[0]);
+    // Expected: row 2 = [9,10,11,12], row 0 = [1,2,3,4]
+    assert_eq!(result, &[9.0, 10.0, 11.0, 12.0, 1.0, 2.0, 3.0, 4.0]);
+}
+
+// ---- Batched dot product ----
+
+#[test]
+fn test_dot_general_batched() {
+    let mlir = r#"
+module @module {
+  func.func public @main(%arg0: tensor<3x4xf64>, %arg1: tensor<3x4xf64>) -> tensor<3xf64> {
+    %0 = stablehlo.dot_general %arg0, %arg1, batching_dims = [0] x [0], contracting_dims = [1] x [1] : (tensor<3x4xf64>, tensor<3x4xf64>) -> tensor<3xf64>
+    return %0 : tensor<3xf64>
+  }
+}
+"#;
+    // batch 0: [1,2,3,4]·[1,0,0,0] = 1
+    // batch 1: [5,6,7,8]·[0,1,0,0] = 6
+    // batch 2: [9,10,11,12]·[0,0,1,0] = 11
+    let a = f64_buf(&[
+        1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0,
+    ]);
+    let b = f64_buf(&[1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0]);
+    let out = run_mlir(mlir, &[&a, &b], &[24]);
+    let result = read_f64s(&out[0]);
+    assert_f64s_close(&result, &[1.0, 6.0, 11.0]);
+}

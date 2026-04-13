@@ -121,6 +121,7 @@ extern "C" fn erf_inv_scalar(x: f64) -> f64 {
 
 /// Cephes ndtri: inverse of the standard normal CDF.
 /// Ported from scipy/special/cephes/ndtri.c (BSD licensed).
+#[allow(clippy::excessive_precision)]
 fn ndtri(y0: f64) -> f64 {
     const P0: [f64; 5] = [
         -5.99633501014107895267E1,
@@ -867,13 +868,17 @@ fn lower_instruction(
             broadcast_dims,
         } => {
             let vals = get_vals(value_map, operand)?.clone();
+            let src_ty = type_map.get(operand).cloned().unwrap_or(rt.clone());
             let n = rt.num_elements();
             if vals.len() == 1 {
                 Ok(vec![vec![vals[0]; n]])
-            } else if vals.len() == n {
-                Ok(vec![vals])
             } else {
-                Ok(vec![broadcast_values(&vals, &rt.shape, broadcast_dims)])
+                Ok(vec![broadcast_values(
+                    &vals,
+                    &rt.shape,
+                    broadcast_dims,
+                    &src_ty.shape,
+                )])
             }
         }
 
@@ -894,14 +899,30 @@ fn lower_instruction(
 
         Instruction::Concatenate {
             operands,
-            dimension: _,
+            dimension,
         } => {
-            let mut all_vals = Vec::new();
-            for vid in operands {
-                let v = get_vals(value_map, vid)?;
-                all_vals.extend_from_slice(v);
+            let parts: Vec<(&TensorVals, TensorType)> = operands
+                .iter()
+                .map(|vid| {
+                    let v = get_vals(value_map, vid)?;
+                    let ty = type_map
+                        .get(vid)
+                        .cloned()
+                        .unwrap_or(TensorType::scalar(ElementType::F64));
+                    Ok((v, ty))
+                })
+                .collect::<Result<_, String>>()?;
+
+            let dim = *dimension as usize;
+            if dim == 0 || parts.iter().all(|(_, ty)| ty.rank() <= 1) {
+                let mut all_vals = Vec::new();
+                for (v, _) in &parts {
+                    all_vals.extend_from_slice(v);
+                }
+                Ok(vec![all_vals])
+            } else {
+                Ok(vec![lower_concatenate_nd(&parts, dim, &rt)])
             }
-            Ok(vec![all_vals])
         }
 
         // ----- Type conversions -----
@@ -1050,6 +1071,56 @@ fn lower_instruction(
             value_map,
             type_map,
         ),
+
+        // ----- Transpose -----
+        Instruction::Transpose {
+            operand,
+            permutation,
+        } => {
+            let vals = get_vals(value_map, operand)?.clone();
+            let src_ty = type_map.get(operand).cloned().unwrap_or(rt.clone());
+            Ok(vec![lower_transpose(&vals, &src_ty, &rt, permutation)])
+        }
+
+        // ----- Dynamic slice -----
+        Instruction::DynamicSlice {
+            operand,
+            start_indices,
+            slice_sizes,
+        } => {
+            let vals = get_vals(value_map, operand)?.clone();
+            let src_ty = type_map.get(operand).cloned().unwrap_or(rt.clone());
+            let idx_vals: Vec<Value> = start_indices
+                .iter()
+                .map(|v| get_vals(value_map, v).map(|vs| vs[0]))
+                .collect::<Result<_, _>>()?;
+            Ok(vec![lower_dynamic_slice(
+                builder,
+                &vals,
+                &idx_vals,
+                &src_ty,
+                slice_sizes,
+            )])
+        }
+
+        // ----- Dynamic update slice -----
+        Instruction::DynamicUpdateSlice {
+            operand,
+            update,
+            start_indices,
+        } => {
+            let vals = get_vals(value_map, operand)?.clone();
+            let upd = get_vals(value_map, update)?.clone();
+            let src_ty = type_map.get(operand).cloned().unwrap_or(rt.clone());
+            let upd_ty = type_map.get(update).cloned().unwrap_or(rt.clone());
+            let idx_vals: Vec<Value> = start_indices
+                .iter()
+                .map(|v| get_vals(value_map, v).map(|vs| vs[0]))
+                .collect::<Result<_, _>>()?;
+            Ok(vec![lower_dynamic_update_slice(
+                builder, &vals, &upd, &idx_vals, &src_ty, &upd_ty,
+            )])
+        }
 
         Instruction::Return { .. } => Ok(vec![]),
     }
@@ -1573,19 +1644,112 @@ fn convert_value(
 // Shape operation helpers
 // ---------------------------------------------------------------------------
 
-fn broadcast_values(vals: &[Value], target_shape: &[i64], _broadcast_dims: &[i64]) -> Vec<Value> {
+fn broadcast_values(
+    vals: &[Value],
+    target_shape: &[i64],
+    broadcast_dims: &[i64],
+    src_shape: &[i64],
+) -> Vec<Value> {
     let n: usize = target_shape.iter().product::<i64>() as usize;
     if vals.len() == 1 {
         return vec![vals[0]; n];
     }
-    if vals.len() == n {
+    if vals.len() == n && broadcast_dims.is_empty() {
         return vals.to_vec();
     }
+
+    let out_rank = target_shape.len();
+    let mut out_strides = vec![1usize; out_rank];
+    for i in (0..out_rank.saturating_sub(1)).rev() {
+        out_strides[i] = out_strides[i + 1] * target_shape[i + 1] as usize;
+    }
+
+    let src_rank = src_shape.len();
+    let mut src_strides = vec![1usize; src_rank.max(1)];
+    for i in (0..src_rank.saturating_sub(1)).rev() {
+        src_strides[i] = src_strides[i + 1] * src_shape[i + 1] as usize;
+    }
+
     let mut out = Vec::with_capacity(n);
-    for i in 0..n {
-        out.push(vals[i % vals.len()]);
+    for flat_out in 0..n {
+        let mut remaining = flat_out;
+        let mut src_flat = 0;
+        for (d, &stride) in out_strides.iter().enumerate() {
+            let idx = remaining / stride;
+            remaining %= stride;
+            if let Some(pos) = broadcast_dims.iter().position(|&bd| bd as usize == d)
+                && pos < src_rank
+                && src_shape[pos] > 1
+            {
+                src_flat += idx * src_strides[pos];
+            }
+        }
+        out.push(vals[src_flat.min(vals.len() - 1)]);
     }
     out
+}
+
+fn lower_concatenate_nd(
+    parts: &[(&TensorVals, TensorType)],
+    dim: usize,
+    out_ty: &TensorType,
+) -> TensorVals {
+    let out_shape: Vec<usize> = out_ty.shape.iter().map(|&d| d as usize).collect();
+    let rank = out_shape.len();
+    let n = out_ty.num_elements();
+
+    let mut out_strides = vec![1usize; rank];
+    for i in (0..rank.saturating_sub(1)).rev() {
+        out_strides[i] = out_strides[i + 1] * out_shape[i + 1];
+    }
+
+    let part_infos: Vec<(Vec<usize>, Vec<usize>)> = parts
+        .iter()
+        .map(|(_, ty)| {
+            let shape: Vec<usize> = ty.shape.iter().map(|&d| d as usize).collect();
+            let mut strides = vec![1usize; rank];
+            for i in (0..rank.saturating_sub(1)).rev() {
+                strides[i] = strides[i + 1] * shape[i + 1];
+            }
+            (shape, strides)
+        })
+        .collect();
+
+    let mut result = Vec::with_capacity(n);
+    for flat_out in 0..n {
+        let mut remaining = flat_out;
+        let mut out_indices = vec![0usize; rank];
+        for d in 0..rank {
+            out_indices[d] = remaining / out_strides[d];
+            remaining %= out_strides[d];
+        }
+
+        let concat_idx = out_indices[dim];
+        let mut part_idx = 0;
+        let mut offset_in_dim = 0;
+        for (i, (shape, _)) in part_infos.iter().enumerate() {
+            if concat_idx < offset_in_dim + shape[dim] {
+                part_idx = i;
+                break;
+            }
+            offset_in_dim += shape[dim];
+        }
+
+        let local_dim_idx = concat_idx - offset_in_dim;
+        let (ref _shape, ref strides) = part_infos[part_idx];
+        let mut src_flat = 0;
+        for d in 0..rank {
+            let idx = if d == dim {
+                local_dim_idx
+            } else {
+                out_indices[d]
+            };
+            src_flat += idx * strides[d];
+        }
+
+        result.push(parts[part_idx].0[src_flat]);
+    }
+    result
 }
 
 fn slice_tensor(vals: &[Value], src_shape: &[i64], starts: &[i64], limits: &[i64]) -> Vec<Value> {
@@ -1630,9 +1794,34 @@ fn lower_dot_general(
     l_ty: &TensorType,
     r_ty: &TensorType,
     out_ty: &TensorType,
-    _dims: &DotDims,
+    dims: &DotDims,
 ) -> TensorVals {
     let n = out_ty.num_elements();
+
+    // Batched dot product: batching_dims=[0]x[0], contracting_dims=[1]x[1]
+    // tensor<BxK> . tensor<BxK> -> tensor<B>
+    if !dims.lhs_batch.is_empty()
+        && l_ty.rank() == 2
+        && r_ty.rank() == 2
+        && dims.lhs_batch == [0]
+        && dims.rhs_batch == [0]
+    {
+        let batch = l_ty.shape[0] as usize;
+        let k = l_ty.shape[1] as usize;
+        let mut out = Vec::new();
+        for b in 0..batch {
+            let zero = builder.ins().f64const(0.0);
+            let mut acc = zero;
+            for i in 0..k {
+                let lv = l[b * k + i];
+                let rv = r[b * k + i];
+                let prod = builder.ins().fmul(lv, rv);
+                acc = builder.ins().fadd(acc, prod);
+            }
+            out.push(acc);
+        }
+        return out;
+    }
 
     if l_ty.is_scalar() && r_ty.is_scalar() {
         return vec![builder.ins().fmul(l[0], r[0])];
@@ -1779,8 +1968,8 @@ fn lower_gather(
     indices: &[Value],
     src_ty: &TensorType,
     out_ty: &TensorType,
-    _dims: &GatherDims,
-    _slice_sizes: &[i64],
+    dims: &GatherDims,
+    slice_sizes: &[i64],
 ) -> TensorVals {
     let n = out_ty.num_elements();
     let et = out_ty.element_type;
@@ -1790,6 +1979,20 @@ fn lower_gather(
     if operand.is_empty() || indices.is_empty() {
         return vec![make_zero(builder, et); n];
     }
+
+    // Row-select gather: start_index_map=[0], collapsed_slice_dims=[0],
+    // offset_dims=[1], slice_sizes=[1, row_len].
+    // Each index selects a full row from the operand.
+    let row_len = if src_ty.shape.len() >= 2 {
+        src_ty.shape.last().copied().unwrap_or(1) as usize
+    } else {
+        1
+    };
+    let n_batch = if !dims.collapsed_slice_dims.is_empty() && slice_sizes.len() >= 2 {
+        n / row_len.max(1)
+    } else {
+        indices.len()
+    };
 
     let total_bytes = operand.len() * elem_sz;
     let ss = builder.create_sized_stack_slot(StackSlotData::new(
@@ -1805,21 +2008,193 @@ fn lower_gather(
     }
 
     let mut results = Vec::with_capacity(n);
-    for &raw_idx in indices.iter().take(n) {
+    for b in 0..n_batch {
+        let raw_idx = if b < indices.len() {
+            indices[b]
+        } else {
+            indices[0]
+        };
         let idx_i64 = if builder.func.dfg.value_type(raw_idx) == types::I64 {
             raw_idx
+        } else if builder.func.dfg.value_type(raw_idx).bytes() < 8 {
+            builder.ins().uextend(types::I64, raw_idx)
         } else {
-            builder.ins().sextend(types::I64, raw_idx)
+            raw_idx
         };
-        let byte_offset = builder.ins().imul_imm(idx_i64, elem_sz as i64);
-        let addr = builder.ins().iadd(base, byte_offset);
-        let v = builder.ins().load(ct, MemFlags::trusted(), addr, 0);
-        results.push(v);
+        let row_byte_offset = builder.ins().imul_imm(idx_i64, (row_len * elem_sz) as i64);
+        let row_addr = builder.ins().iadd(base, row_byte_offset);
+        for col in 0..row_len {
+            let v = builder
+                .ins()
+                .load(ct, MemFlags::trusted(), row_addr, (col * elem_sz) as i32);
+            results.push(v);
+        }
     }
 
     while results.len() < n {
         results.push(make_zero(builder, et));
     }
+    results.truncate(n);
+    results
+}
 
+fn lower_transpose(
+    vals: &[Value],
+    src_ty: &TensorType,
+    out_ty: &TensorType,
+    permutation: &[i64],
+) -> TensorVals {
+    let n = out_ty.num_elements();
+    if vals.len() != n || src_ty.shape.len() != permutation.len() {
+        return vals.to_vec();
+    }
+
+    let rank = src_ty.shape.len();
+    let src_shape: Vec<usize> = src_ty.shape.iter().map(|&d| d as usize).collect();
+    let out_shape: Vec<usize> = out_ty.shape.iter().map(|&d| d as usize).collect();
+
+    let mut src_strides = vec![1usize; rank];
+    for i in (0..rank - 1).rev() {
+        src_strides[i] = src_strides[i + 1] * src_shape[i + 1];
+    }
+    let mut out_strides = vec![1usize; rank];
+    for i in (0..rank - 1).rev() {
+        out_strides[i] = out_strides[i + 1] * out_shape[i + 1];
+    }
+
+    let mut result = vec![vals[0]; n];
+    for (flat_out, slot) in result.iter_mut().enumerate() {
+        let mut remaining = flat_out;
+        let mut out_indices = vec![0usize; rank];
+        for d in 0..rank {
+            out_indices[d] = remaining / out_strides[d];
+            remaining %= out_strides[d];
+        }
+        let mut src_flat = 0;
+        for d in 0..rank {
+            let src_dim = permutation[d] as usize;
+            src_flat += out_indices[d] * src_strides[src_dim];
+        }
+        *slot = vals[src_flat];
+    }
+    result
+}
+
+fn lower_dynamic_slice(
+    builder: &mut FunctionBuilder,
+    vals: &[Value],
+    start_indices: &[Value],
+    src_ty: &TensorType,
+    slice_sizes: &[i64],
+) -> TensorVals {
+    let et = src_ty.element_type;
+    let ct = cranelift_type_for(et);
+    let elem_sz = et.byte_size();
+
+    let total_bytes = vals.len() * elem_sz;
+    let ss = builder.create_sized_stack_slot(StackSlotData::new(
+        StackSlotKind::ExplicitSlot,
+        total_bytes as u32,
+        3,
+    ));
+    let base = builder.ins().stack_addr(ptr_type(), ss, 0);
+    for (i, &v) in vals.iter().enumerate() {
+        builder
+            .ins()
+            .store(MemFlags::trusted(), v, base, (i * elem_sz) as i32);
+    }
+
+    let rank = src_ty.shape.len();
+    let mut strides = vec![1usize; rank];
+    for i in (0..rank - 1).rev() {
+        strides[i] = strides[i + 1] * src_ty.shape[i + 1] as usize;
+    }
+
+    // Compute the flat byte offset from dynamic start indices
+    let mut flat_offset = builder.ins().iconst(types::I64, 0);
+    for d in 0..rank {
+        if d < start_indices.len() {
+            let idx = start_indices[d];
+            let idx_i64 = if builder.func.dfg.value_type(idx) == types::I64 {
+                idx
+            } else {
+                builder.ins().sextend(types::I64, idx)
+            };
+            let stride_bytes = (strides[d] * elem_sz) as i64;
+            let contrib = builder.ins().imul_imm(idx_i64, stride_bytes);
+            flat_offset = builder.ins().iadd(flat_offset, contrib);
+        }
+    }
+    let slice_base = builder.ins().iadd(base, flat_offset);
+
+    let out_n: usize = slice_sizes.iter().product::<i64>() as usize;
+    let mut results = Vec::with_capacity(out_n);
+    for i in 0..out_n {
+        let v = builder
+            .ins()
+            .load(ct, MemFlags::trusted(), slice_base, (i * elem_sz) as i32);
+        results.push(v);
+    }
+    results
+}
+
+fn lower_dynamic_update_slice(
+    builder: &mut FunctionBuilder,
+    base_vals: &[Value],
+    update_vals: &[Value],
+    start_indices: &[Value],
+    src_ty: &TensorType,
+    _upd_ty: &TensorType,
+) -> TensorVals {
+    let et = src_ty.element_type;
+    let ct = cranelift_type_for(et);
+    let elem_sz = et.byte_size();
+
+    let total_bytes = base_vals.len() * elem_sz;
+    let ss = builder.create_sized_stack_slot(StackSlotData::new(
+        StackSlotKind::ExplicitSlot,
+        total_bytes as u32,
+        3,
+    ));
+    let base_addr = builder.ins().stack_addr(ptr_type(), ss, 0);
+    for (i, &v) in base_vals.iter().enumerate() {
+        builder
+            .ins()
+            .store(MemFlags::trusted(), v, base_addr, (i * elem_sz) as i32);
+    }
+
+    let rank = src_ty.shape.len();
+    let mut strides = vec![1usize; rank];
+    for i in (0..rank - 1).rev() {
+        strides[i] = strides[i + 1] * src_ty.shape[i + 1] as usize;
+    }
+
+    let mut flat_offset = builder.ins().iconst(types::I64, 0);
+    for d in 0..rank.min(start_indices.len()) {
+        let idx = start_indices[d];
+        let idx_i64 = if builder.func.dfg.value_type(idx) == types::I64 {
+            idx
+        } else {
+            builder.ins().sextend(types::I64, idx)
+        };
+        let stride_bytes = (strides[d] * elem_sz) as i64;
+        let contrib = builder.ins().imul_imm(idx_i64, stride_bytes);
+        flat_offset = builder.ins().iadd(flat_offset, contrib);
+    }
+    let update_addr = builder.ins().iadd(base_addr, flat_offset);
+
+    for (i, &v) in update_vals.iter().enumerate() {
+        builder
+            .ins()
+            .store(MemFlags::trusted(), v, update_addr, (i * elem_sz) as i32);
+    }
+
+    let mut results = Vec::with_capacity(base_vals.len());
+    for i in 0..base_vals.len() {
+        let v = builder
+            .ins()
+            .load(ct, MemFlags::trusted(), base_addr, (i * elem_sz) as i32);
+        results.push(v);
+    }
     results
 }

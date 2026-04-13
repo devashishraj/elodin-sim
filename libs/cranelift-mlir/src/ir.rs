@@ -301,6 +301,20 @@ pub enum Instruction {
         dims: GatherDims,
         slice_sizes: Vec<i64>,
     },
+    Transpose {
+        operand: ValueId,
+        permutation: Vec<i64>,
+    },
+    DynamicSlice {
+        operand: ValueId,
+        start_indices: Vec<ValueId>,
+        slice_sizes: Vec<i64>,
+    },
+    DynamicUpdateSlice {
+        operand: ValueId,
+        update: ValueId,
+        start_indices: Vec<ValueId>,
+    },
 }
 
 #[derive(Debug, Clone)]

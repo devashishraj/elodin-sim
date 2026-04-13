@@ -87,11 +87,19 @@ fn test_threefry2x32_with_known_inputs() {
     eprintln!("threefry2x32 output lo: {:?}", result_lo);
     eprintln!(
         "hi hex: {}",
-        result_hi.iter().map(|v| format!("{v:#010X}")).collect::<Vec<_>>().join(", ")
+        result_hi
+            .iter()
+            .map(|v| format!("{v:#010X}"))
+            .collect::<Vec<_>>()
+            .join(", ")
     );
     eprintln!(
         "lo hex: {}",
-        result_lo.iter().map(|v| format!("{v:#010X}")).collect::<Vec<_>>().join(", ")
+        result_lo
+            .iter()
+            .map(|v| format!("{v:#010X}"))
+            .collect::<Vec<_>>()
+            .join(", ")
     );
 
     // The expected output from JAX random.bits(key(0), shape=(3,), dtype=uint32):

@@ -106,7 +106,7 @@
       "-I${pkgs.stdenv.cc.libc.dev}/include -I${pkgs.llvmPackages.libclang.lib}/lib/clang/${lib.versions.major pkgs.llvmPackages.libclang.version}/include";
 
     # Ensure C++ standard library is linked on macOS
-    NIX_LDFLAGS = lib.optionalString pkgs.stdenv.isDarwin "-lc++";
+    NIX_LDFLAGS = lib.optionalString pkgs.stdenv.isDarwin "-lc++ -headerpad_max_install_names";
 
     doCheck = false;
 

@@ -38,7 +38,9 @@ fn test_threefry_round() {
     let ball_mlir = include_str!("../testdata/ball.stablehlo.mlir");
     let module = parse_module(ball_mlir).expect("parse failed");
 
-    let func = module.get_func("closed_call").expect("closed_call not found");
+    let func = module
+        .get_func("closed_call")
+        .expect("closed_call not found");
     eprintln!(
         "closed_call params: {}",
         func.params
@@ -109,7 +111,11 @@ module @module {
     let out = run_mlir(mlir, &[&u32_buf(&[0xDEADBEEF]), &u32_buf(&[4])], &[4]);
     let result = read_u32s(&out[0]);
     let expected = 0xDEADBEEFu32 >> 4;
-    assert_eq!(result[0], expected, "got {:#010X} expected {:#010X}", result[0], expected);
+    assert_eq!(
+        result[0], expected,
+        "got {:#010X} expected {:#010X}",
+        result[0], expected
+    );
 }
 
 #[test]
@@ -122,11 +128,7 @@ module @module {
   }
 }
 "#;
-    let out = run_mlir(
-        mlir,
-        &[&u32_buf(&[0xFFFFFFFF]), &u32_buf(&[1])],
-        &[4],
-    );
+    let out = run_mlir(mlir, &[&u32_buf(&[0xFFFFFFFF]), &u32_buf(&[1])], &[4]);
     let result = read_u32s(&out[0]);
     assert_eq!(result[0], 0u32, "overflow should wrap");
 }

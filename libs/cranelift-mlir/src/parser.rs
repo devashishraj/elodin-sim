@@ -306,6 +306,15 @@ fn parse_op(
     if input.starts_with("\"stablehlo.gather\"") || input.starts_with("stablehlo.gather") {
         return parse_gather_op(input, ctx, result_names);
     }
+    if input.starts_with("stablehlo.transpose") {
+        return parse_transpose_op(input, ctx, result_names);
+    }
+    if input.starts_with("stablehlo.dynamic_update_slice") {
+        return parse_dynamic_update_slice_op(input, ctx, result_names);
+    }
+    if input.starts_with("stablehlo.dynamic_slice") {
+        return parse_dynamic_slice_op(input, ctx, result_names);
+    }
     if input.starts_with("stablehlo.while") {
         return parse_while_op(input, ctx, result_names);
     }
@@ -978,6 +987,123 @@ fn parse_gather_op(
                 index_vector_dim,
             },
             slice_sizes,
+        },
+    }))
+}
+
+fn parse_transpose_op(
+    input: &mut Stream<'_>,
+    ctx: &mut ValueCtx,
+    result_names: &[String],
+) -> PResult<Option<InstrResult>> {
+    let _ = "stablehlo.transpose".parse_next(input)?;
+    ws(input)?;
+    let operand = parse_value_ref(input, ctx)?;
+    ws(input)?;
+    let _ = ','.parse_next(input)?;
+    ws(input)?;
+    let rest = take_till(0.., '\n').parse_next(input)?;
+    let _ = opt('\n').parse_next(input)?;
+
+    let permutation = extract_bracket_ints(rest, "dims = [");
+    let ty = parse_final_type(rest);
+    let values = make_values(ctx, result_names, vec![ty]);
+    Ok(Some(InstrResult {
+        values,
+        instr: Instruction::Transpose {
+            operand,
+            permutation,
+        },
+    }))
+}
+
+fn parse_dynamic_slice_op(
+    input: &mut Stream<'_>,
+    ctx: &mut ValueCtx,
+    result_names: &[String],
+) -> PResult<Option<InstrResult>> {
+    let _ = "stablehlo.dynamic_slice".parse_next(input)?;
+    ws(input)?;
+    let operand = parse_value_ref(input, ctx)?;
+    ws(input)?;
+    let _ = ','.parse_next(input)?;
+    ws(input)?;
+
+    let mut start_indices = Vec::new();
+    loop {
+        if input.starts_with("sizes") || input.starts_with(':') {
+            break;
+        }
+        let v = parse_value_ref(input, ctx)?;
+        start_indices.push(v);
+        ws(input)?;
+        if input.starts_with(',') {
+            let _ = ','.parse_next(input)?;
+            ws(input)?;
+        }
+    }
+
+    let rest = take_till(0.., '\n').parse_next(input)?;
+    let _ = opt('\n').parse_next(input)?;
+
+    let mut slice_sizes = extract_bracket_ints(rest, "sizes = [");
+    if slice_sizes.is_empty() {
+        slice_sizes = extract_bracket_ints(rest, "sizes = array<i64: ");
+    }
+
+    let ty = parse_final_type(rest);
+    let values = make_values(ctx, result_names, vec![ty]);
+    Ok(Some(InstrResult {
+        values,
+        instr: Instruction::DynamicSlice {
+            operand,
+            start_indices,
+            slice_sizes,
+        },
+    }))
+}
+
+fn parse_dynamic_update_slice_op(
+    input: &mut Stream<'_>,
+    ctx: &mut ValueCtx,
+    result_names: &[String],
+) -> PResult<Option<InstrResult>> {
+    let _ = "stablehlo.dynamic_update_slice".parse_next(input)?;
+    ws(input)?;
+    let operand = parse_value_ref(input, ctx)?;
+    ws(input)?;
+    let _ = ','.parse_next(input)?;
+    ws(input)?;
+    let update = parse_value_ref(input, ctx)?;
+    ws(input)?;
+    let _ = ','.parse_next(input)?;
+    ws(input)?;
+
+    let mut start_indices = Vec::new();
+    loop {
+        if input.starts_with(':') || input.starts_with('\n') || input.is_empty() {
+            break;
+        }
+        let v = parse_value_ref(input, ctx)?;
+        start_indices.push(v);
+        ws(input)?;
+        if input.starts_with(',') {
+            let _ = ','.parse_next(input)?;
+            ws(input)?;
+        }
+    }
+
+    let rest = take_till(0.., '\n').parse_next(input)?;
+    let _ = opt('\n').parse_next(input)?;
+
+    let ty = parse_final_type(rest);
+    let values = make_values(ctx, result_names, vec![ty]);
+    Ok(Some(InstrResult {
+        values,
+        instr: Instruction::DynamicUpdateSlice {
+            operand,
+            update,
+            start_indices,
         },
     }))
 }

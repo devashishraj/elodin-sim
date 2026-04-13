@@ -93,14 +93,14 @@ fn test_closed_call_standalone() {
     let out = run_mlir(
         mlir,
         &[
-            &i64_buf(&[0]),                    // arg0: tensor<i64> (counter)
-            &u32_buf(&[0, 0, 0]),              // arg1: tensor<3xui32> (x)
-            &u32_buf(&[0, 0, 0]),              // arg2: tensor<3xui32> (y)
-            &u32_buf(&[0]),                    // arg3: tensor<ui32> (key1)
-            &u32_buf(&[0]),                    // arg4: tensor<ui32> (key2)
-            &u32_buf(&[0]),                    // arg5: tensor<ui32> (key_xor_const)
-            &u32_buf(&[13, 15, 26, 6]),        // arg6: tensor<4xui32> (rotations1)
-            &u32_buf(&[17, 29, 16, 24]),       // arg7: tensor<4xui32> (rotations2)
+            &i64_buf(&[0]),              // arg0: tensor<i64> (counter)
+            &u32_buf(&[0, 0, 0]),        // arg1: tensor<3xui32> (x)
+            &u32_buf(&[0, 0, 0]),        // arg2: tensor<3xui32> (y)
+            &u32_buf(&[0]),              // arg3: tensor<ui32> (key1)
+            &u32_buf(&[0]),              // arg4: tensor<ui32> (key2)
+            &u32_buf(&[0]),              // arg5: tensor<ui32> (key_xor_const)
+            &u32_buf(&[13, 15, 26, 6]),  // arg6: tensor<4xui32> (rotations1)
+            &u32_buf(&[17, 29, 16, 24]), // arg7: tensor<4xui32> (rotations2)
         ],
         &[8, 12, 12, 4, 4, 4, 16, 16],
     );
@@ -124,5 +124,9 @@ fn test_closed_call_standalone() {
     //        y_temp = y + key2_broadcast = 0 + [0,0,0] = [0,0,0]
     //        y_final = y_temp + convert(counter+1=1)_broadcast = [1,1,1]
     assert_eq!(out_x, vec![0, 0, 0], "x should be zero with zero inputs");
-    assert_eq!(out_y, vec![1, 1, 1], "y should be [1,1,1] from counter injection");
+    assert_eq!(
+        out_y,
+        vec![1, 1, 1],
+        "y should be [1,1,1] from counter injection"
+    );
 }

@@ -184,11 +184,17 @@ fn test_full_prng_pipeline_seed_zero() {
     eprintln!("Expected wind:  [-0.2058421394796434, -0.7847657764467411, 1.8160866726679836]");
 
     // Check if wind matches JAX reference
-    let expected = [-0.2058421394796434f64, -0.7847657764467411, 1.8160866726679836];
+    let expected = [
+        -0.2058421394796434f64,
+        -0.7847657764467411,
+        1.8160866726679836,
+    ];
     for (i, (&got, &exp)) in new_wind.iter().zip(expected.iter()).enumerate() {
         let diff = (got - exp).abs();
         let rel = diff / exp.abs().max(1e-15);
-        eprintln!("  wind[{i}]: got={got:.16}, exp={exp:.16}, abs_diff={diff:.3e}, rel_diff={rel:.3e}");
+        eprintln!(
+            "  wind[{i}]: got={got:.16}, exp={exp:.16}, abs_diff={diff:.3e}, rel_diff={rel:.3e}"
+        );
     }
 
     // For now, just report the values -- we expect this to fail until the PRNG is fixed
