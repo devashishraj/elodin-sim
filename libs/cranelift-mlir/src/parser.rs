@@ -321,9 +321,103 @@ fn parse_op(
     if input.starts_with("\"stablehlo.case\"") || input.starts_with("stablehlo.case") {
         return parse_case_op(input, ctx, result_names);
     }
+    if input.starts_with("stablehlo.sine") {
+        return parse_unary_op(input, ctx, result_names, "stablehlo.sine", |o| {
+            Instruction::Sine { operand: o }
+        });
+    }
+    if input.starts_with("stablehlo.cosine") {
+        return parse_unary_op(input, ctx, result_names, "stablehlo.cosine", |o| {
+            Instruction::Cosine { operand: o }
+        });
+    }
+    if input.starts_with("stablehlo.atan2") {
+        return parse_binary_op(input, ctx, result_names, "stablehlo.atan2", |l, r| {
+            Instruction::Atan2 { lhs: l, rhs: r }
+        });
+    }
+    if input.starts_with("stablehlo.abs") {
+        return parse_unary_op(input, ctx, result_names, "stablehlo.abs", |o| {
+            Instruction::Abs { operand: o }
+        });
+    }
+    if input.starts_with("stablehlo.minimum") {
+        return parse_binary_op(input, ctx, result_names, "stablehlo.minimum", |l, r| {
+            Instruction::Minimum { lhs: l, rhs: r }
+        });
+    }
+    if input.starts_with("stablehlo.sign") {
+        return parse_unary_op(input, ctx, result_names, "stablehlo.sign", |o| {
+            Instruction::Sign { operand: o }
+        });
+    }
+    if input.starts_with("stablehlo.remainder") {
+        return parse_binary_op(input, ctx, result_names, "stablehlo.remainder", |l, r| {
+            Instruction::Remainder { lhs: l, rhs: r }
+        });
+    }
+    if input.starts_with("stablehlo.exponential") {
+        return parse_unary_op(input, ctx, result_names, "stablehlo.exponential", |o| {
+            Instruction::Exponential { operand: o }
+        });
+    }
+    if input.starts_with("stablehlo.log ") || input.starts_with("stablehlo.log_plus_one") {
+        return parse_unary_op(input, ctx, result_names, "stablehlo.log", |o| {
+            Instruction::Log { operand: o }
+        });
+    }
+    if input.starts_with("stablehlo.clamp") {
+        return parse_clamp_op(input, ctx, result_names);
+    }
+    if input.starts_with("stablehlo.power") {
+        return parse_binary_op(input, ctx, result_names, "stablehlo.power", |l, r| {
+            Instruction::Power { lhs: l, rhs: r }
+        });
+    }
+    if input.starts_with("stablehlo.reverse") {
+        return parse_reverse_op(input, ctx, result_names);
+    }
+    if input.starts_with("stablehlo.tanh") {
+        return parse_unary_op(input, ctx, result_names, "stablehlo.tanh", |o| {
+            Instruction::Tanh { operand: o }
+        });
+    }
+    if input.starts_with("stablehlo.tan ") {
+        return parse_unary_op(input, ctx, result_names, "stablehlo.tan", |o| {
+            Instruction::Tan { operand: o }
+        });
+    }
+    if input.starts_with("stablehlo.floor") {
+        return parse_unary_op(input, ctx, result_names, "stablehlo.floor", |o| {
+            Instruction::Floor { operand: o }
+        });
+    }
+    if input.starts_with("stablehlo.round_nearest_even") {
+        return parse_unary_op(input, ctx, result_names, "stablehlo.round_nearest_even", |o| {
+            Instruction::RoundNearestEven { operand: o }
+        });
+    }
     if input.starts_with("chlo.erf_inv") {
         return parse_unary_op(input, ctx, result_names, "chlo.erf_inv", |o| {
             Instruction::ErfInv { operand: o }
+        });
+    }
+    if input.starts_with("stablehlo.pad") {
+        return parse_pad_op(input, ctx, result_names);
+    }
+    if input.starts_with("\"stablehlo.scatter\"") || input.starts_with("stablehlo.scatter") {
+        return parse_scatter_op(input, ctx, result_names);
+    }
+    if input.starts_with("stablehlo.custom_call") {
+        return parse_custom_call_op(input, ctx, result_names);
+    }
+    if input.starts_with("stablehlo.output_operand_alias") {
+        skip_to_newline(input)?;
+        return Ok(None);
+    }
+    if input.starts_with("chlo.acos") {
+        return parse_unary_op(input, ctx, result_names, "chlo.acos", |o| {
+            Instruction::Acos { operand: o }
         });
     }
     if input.starts_with("call @") || input.starts_with("func.call @") {
@@ -1013,6 +1107,226 @@ fn parse_transpose_op(
         instr: Instruction::Transpose {
             operand,
             permutation,
+        },
+    }))
+}
+
+fn parse_clamp_op(
+    input: &mut Stream<'_>,
+    ctx: &mut ValueCtx,
+    result_names: &[String],
+) -> PResult<Option<InstrResult>> {
+    let _ = "stablehlo.clamp".parse_next(input)?;
+    ws(input)?;
+    let min = parse_value_ref(input, ctx)?;
+    ws(input)?;
+    let _ = ','.parse_next(input)?;
+    ws(input)?;
+    let operand = parse_value_ref(input, ctx)?;
+    ws(input)?;
+    let _ = ','.parse_next(input)?;
+    ws(input)?;
+    let max = parse_value_ref(input, ctx)?;
+    ws(input)?;
+    let _ = ':'.parse_next(input)?;
+    ws(input)?;
+    let rest = take_till(0.., '\n').parse_next(input)?;
+    let _ = opt('\n').parse_next(input)?;
+
+    let ty = parse_final_type(rest);
+    let values = make_values(ctx, result_names, vec![ty]);
+    Ok(Some(InstrResult {
+        values,
+        instr: Instruction::Clamp { operand, min, max },
+    }))
+}
+
+fn parse_reverse_op(
+    input: &mut Stream<'_>,
+    ctx: &mut ValueCtx,
+    result_names: &[String],
+) -> PResult<Option<InstrResult>> {
+    let _ = "stablehlo.reverse".parse_next(input)?;
+    ws(input)?;
+    let operand = parse_value_ref(input, ctx)?;
+    ws(input)?;
+    let _ = ','.parse_next(input)?;
+    ws(input)?;
+    let rest = take_till(0.., '\n').parse_next(input)?;
+    let _ = opt('\n').parse_next(input)?;
+
+    let dimensions = extract_bracket_ints(rest, "dims = [");
+    let ty = parse_final_type(rest);
+    let values = make_values(ctx, result_names, vec![ty]);
+    Ok(Some(InstrResult {
+        values,
+        instr: Instruction::Reverse {
+            operand,
+            dimensions,
+        },
+    }))
+}
+
+fn parse_pad_op(
+    input: &mut Stream<'_>,
+    ctx: &mut ValueCtx,
+    result_names: &[String],
+) -> PResult<Option<InstrResult>> {
+    let _ = "stablehlo.pad".parse_next(input)?;
+    ws(input)?;
+    let operand = parse_value_ref(input, ctx)?;
+    ws(input)?;
+    let _ = ','.parse_next(input)?;
+    ws(input)?;
+    let padding_value = parse_value_ref(input, ctx)?;
+    ws(input)?;
+    let _ = ','.parse_next(input)?;
+    ws(input)?;
+    let rest = take_till(0.., '\n').parse_next(input)?;
+    let _ = opt('\n').parse_next(input)?;
+
+    let low = extract_bracket_ints(rest, "low = [");
+    let high = extract_bracket_ints(rest, "high = [");
+    let interior = extract_bracket_ints(rest, "interior = [");
+    let ty = parse_final_type(rest);
+    let values = make_values(ctx, result_names, vec![ty]);
+    Ok(Some(InstrResult {
+        values,
+        instr: Instruction::Pad {
+            operand,
+            padding_value,
+            low,
+            high,
+            interior,
+        },
+    }))
+}
+
+fn parse_scatter_op(
+    input: &mut Stream<'_>,
+    ctx: &mut ValueCtx,
+    result_names: &[String],
+) -> PResult<Option<InstrResult>> {
+    if input.starts_with("\"stablehlo.scatter\"") {
+        let _ = "\"stablehlo.scatter\"".parse_next(input)?;
+    } else {
+        let _ = "stablehlo.scatter".parse_next(input)?;
+    }
+    let _ = '('.parse_next(input)?;
+    ws(input)?;
+    let operand = parse_value_ref(input, ctx)?;
+    ws(input)?;
+    let _ = ','.parse_next(input)?;
+    ws(input)?;
+    let indices = parse_value_ref(input, ctx)?;
+    ws(input)?;
+    let _ = ','.parse_next(input)?;
+    ws(input)?;
+    let updates = parse_value_ref(input, ctx)?;
+    ws(input)?;
+    let _ = ')'.parse_next(input)?;
+    ws(input)?;
+
+    // Skip everything until the line starting with "}) :" which ends the scatter
+    loop {
+        let line: &str = take_till(0.., '\n').parse_next(input)?;
+        let _ = opt('\n').parse_next(input)?;
+        let trimmed = line.trim();
+        if trimmed.starts_with("}) :") || trimmed.starts_with("}) :") {
+            let ty = parse_final_type(trimmed);
+            let values = make_values(ctx, result_names, vec![ty]);
+            return Ok(Some(InstrResult {
+                values,
+                instr: Instruction::Scatter {
+                    operand,
+                    indices,
+                    updates,
+                },
+            }));
+        }
+        if input.is_empty() {
+            break;
+        }
+    }
+
+    let values = make_values(ctx, result_names, vec![TensorType::scalar(ElementType::F64)]);
+    Ok(Some(InstrResult {
+        values,
+        instr: Instruction::Scatter {
+            operand,
+            indices,
+            updates,
+        },
+    }))
+}
+
+fn parse_custom_call_op(
+    input: &mut Stream<'_>,
+    ctx: &mut ValueCtx,
+    result_names: &[String],
+) -> PResult<Option<InstrResult>> {
+    let _ = "stablehlo.custom_call".parse_next(input)?;
+    ws(input)?;
+    let _ = '@'.parse_next(input)?;
+    let call_target = ident(input)?;
+    let _ = '('.parse_next(input)?;
+    ws(input)?;
+
+    let mut operands = Vec::new();
+    if !input.starts_with(')') {
+        loop {
+            ws(input)?;
+            if input.starts_with(')') {
+                break;
+            }
+            let v = parse_value_ref(input, ctx)?;
+            operands.push(v);
+            ws(input)?;
+            if input.starts_with(',') {
+                let _ = ','.parse_next(input)?;
+            } else {
+                break;
+            }
+        }
+    }
+    let _ = ')'.parse_next(input)?;
+    ws(input)?;
+
+    // Skip everything until the result type annotation
+    let rest = take_till(0.., '\n').parse_next(input)?;
+    let _ = opt('\n').parse_next(input)?;
+
+    let ty_str = rest.trim();
+    let mut types = Vec::new();
+    if let Some(after_arrow) = ty_str.rfind("-> ") {
+        let result_part = &ty_str[after_arrow + 3..];
+        if result_part.starts_with('(') {
+            let inner = result_part
+                .trim_start_matches('(')
+                .trim_end_matches(')');
+            for part in inner.split(", tensor<") {
+                let part = if part.starts_with("tensor<") {
+                    part.to_string()
+                } else {
+                    format!("tensor<{part}")
+                };
+                types.push(parse_tensor_type_from_str(&part));
+            }
+        } else {
+            types.push(parse_tensor_type_from_str(result_part));
+        }
+    }
+
+    if types.is_empty() {
+        types.push(TensorType::scalar(ElementType::F64));
+    }
+
+    let values = make_values(ctx, result_names, types);
+    Ok(Some(InstrResult {
+        values,
+        instr: Instruction::CustomCall {
+            call_target,
+            operands,
         },
     }))
 }
@@ -1736,6 +2050,13 @@ impl ValueCtx {
         id
     }
 
+    fn define(&mut self, name: &str) -> ValueId {
+        let id = ValueId(self.next_id);
+        self.next_id += 1;
+        self.name_to_id.insert(name.to_string(), id);
+        id
+    }
+
     fn fresh(&mut self) -> ValueId {
         let id = ValueId(self.next_id);
         self.next_id += 1;
@@ -1765,7 +2086,6 @@ fn make_values(
             ctx.fresh()
         } else {
             let vid = ctx.get_or_create(&result_names[0]);
-            // For multi-result SSA names, alias base#0 to the base name
             if result_names.len() > 1 {
                 let alias = format!("{}#0", result_names[0]);
                 ctx.name_to_id.insert(alias, vid);

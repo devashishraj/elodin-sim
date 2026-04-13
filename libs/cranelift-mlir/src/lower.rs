@@ -106,6 +106,15 @@ extern "C" fn libc_log(x: f64) -> f64 {
 extern "C" fn libc_exp(x: f64) -> f64 {
     x.exp()
 }
+extern "C" fn libc_pow(x: f64, y: f64) -> f64 {
+    x.powf(y)
+}
+extern "C" fn libc_tanh(x: f64) -> f64 {
+    x.tanh()
+}
+extern "C" fn libc_tan(x: f64) -> f64 {
+    x.tan()
+}
 
 /// erfinv via the Cephes ndtri rational approximation.
 /// erfinv(x) = ndtri((x + 1) / 2) / sqrt(2)
@@ -250,6 +259,11 @@ struct LibmIds {
     fmod: FuncId,
     acos: FuncId,
     erf_inv: FuncId,
+    log: FuncId,
+    exp: FuncId,
+    pow: FuncId,
+    tanh: FuncId,
+    tan: FuncId,
 }
 
 fn declare_libm_functions(
@@ -279,6 +293,11 @@ fn declare_libm_functions(
         fmod: mk("fmod", 2, 1)?,
         acos: mk("acos", 1, 1)?,
         erf_inv: mk("erf_inv_impl", 1, 1)?,
+        log: mk("log", 1, 1)?,
+        exp: mk("exp", 1, 1)?,
+        pow: mk("pow", 2, 1)?,
+        tanh: mk("tanh", 1, 1)?,
+        tan: mk("tan", 1, 1)?,
     })
 }
 
@@ -307,7 +326,11 @@ pub fn compile_module(ir_module: &crate::ir::Module) -> Result<CompiledModule, S
     jit_builder.symbol("acos", libc_acos as *const u8);
     jit_builder.symbol("log", libc_log as *const u8);
     jit_builder.symbol("exp", libc_exp as *const u8);
+    jit_builder.symbol("pow", libc_pow as *const u8);
+    jit_builder.symbol("tanh", libc_tanh as *const u8);
+    jit_builder.symbol("tan", libc_tan as *const u8);
     jit_builder.symbol("erf_inv_impl", erf_inv_scalar as *const u8);
+    jit_builder.symbol("__cranelift_svd_3x3", svd_3x3 as *const u8);
 
     let mut jit_module = JITModule::new(jit_builder);
     let func_ids = declare_all_functions(ir_module, &mut jit_module, call_conv)?;
@@ -315,14 +338,30 @@ pub fn compile_module(ir_module: &crate::ir::Module) -> Result<CompiledModule, S
 
     for func_def in &ir_module.functions {
         let fid = func_ids[&func_def.name];
-        define_function(
-            &mut jit_module,
-            func_def,
-            ir_module,
-            &func_ids,
-            &libm_ids,
-            fid,
-        )?;
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            define_function(
+                &mut jit_module,
+                func_def,
+                ir_module,
+                &func_ids,
+                &libm_ids,
+                fid,
+            )
+        }));
+        match result {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => return Err(format!("define {}: {e}", func_def.name)),
+            Err(panic) => {
+                let msg = if let Some(s) = panic.downcast_ref::<String>() {
+                    s.clone()
+                } else if let Some(s) = panic.downcast_ref::<&str>() {
+                    s.to_string()
+                } else {
+                    "unknown panic".to_string()
+                };
+                return Err(format!("panic compiling {}: {msg}", func_def.name));
+            }
+        }
     }
 
     jit_module
@@ -437,6 +476,7 @@ fn define_function(
 
         builder.finalize();
     }
+
 
     jit_module
         .define_function(fid, &mut ctx)
@@ -769,8 +809,216 @@ fn lower_instruction(
         }
 
         // ----- Transcendental (libm calls) -----
+        Instruction::Sine { operand } => {
+            lower_libm_unary(builder, value_map, operand, libm_ids.sin, jit_module)
+        }
+        Instruction::Cosine { operand } => {
+            lower_libm_unary(builder, value_map, operand, libm_ids.cos, jit_module)
+        }
+        Instruction::Atan2 { lhs, rhs } => {
+            lower_libm_binary(builder, value_map, lhs, rhs, libm_ids.atan2, jit_module)
+        }
+        Instruction::Acos { operand } => {
+            lower_libm_unary(builder, value_map, operand, libm_ids.acos, jit_module)
+        }
+        Instruction::Exponential { operand } => {
+            lower_libm_unary(builder, value_map, operand, libm_ids.exp, jit_module)
+        }
+        Instruction::Log { operand } => {
+            lower_libm_unary(builder, value_map, operand, libm_ids.log, jit_module)
+        }
+        Instruction::Power { lhs, rhs } => {
+            lower_libm_binary(builder, value_map, lhs, rhs, libm_ids.pow, jit_module)
+        }
+        Instruction::Tan { operand } => {
+            lower_libm_unary(builder, value_map, operand, libm_ids.tan, jit_module)
+        }
+        Instruction::Tanh { operand } => {
+            lower_libm_unary(builder, value_map, operand, libm_ids.tanh, jit_module)
+        }
         Instruction::ErfInv { operand } => {
             lower_libm_unary(builder, value_map, operand, libm_ids.erf_inv, jit_module)
+        }
+
+        Instruction::Abs { operand } => {
+            let vals = get_vals(value_map, operand)?;
+            let et = rt.element_type;
+            let out: Vec<Value> = if is_float(et) {
+                let func_ref = jit_module.declare_func_in_func(libm_ids.fabs, builder.func);
+                vals.iter()
+                    .map(|&v| {
+                        let call = builder.ins().call(func_ref, &[v]);
+                        builder.inst_results(call)[0]
+                    })
+                    .collect()
+            } else {
+                vals.iter()
+                    .map(|&v| {
+                        let zero = builder.ins().iconst(cranelift_type_for(et), 0);
+                        let neg = builder.ins().isub(zero, v);
+                        let is_neg = builder.ins().icmp(IntCC::SignedLessThan, v, zero);
+                        builder.ins().select(is_neg, neg, v)
+                    })
+                    .collect()
+            };
+            Ok(vec![out])
+        }
+
+        Instruction::Sign { operand } => {
+            let vals = get_vals(value_map, operand)?;
+            let et = rt.element_type;
+            let out: Vec<Value> = if is_float(et) {
+                vals.iter()
+                    .map(|&v| {
+                        let (zero, one, neg_one) = match et {
+                            ElementType::F32 => (
+                                builder.ins().f32const(0.0),
+                                builder.ins().f32const(1.0),
+                                builder.ins().f32const(-1.0),
+                            ),
+                            _ => (
+                                builder.ins().f64const(0.0),
+                                builder.ins().f64const(1.0),
+                                builder.ins().f64const(-1.0),
+                            ),
+                        };
+                        let is_pos = builder.ins().fcmp(FloatCC::GreaterThan, v, zero);
+                        let is_neg = builder.ins().fcmp(FloatCC::LessThan, v, zero);
+                        let step1 = builder.ins().select(is_pos, one, zero);
+                        builder.ins().select(is_neg, neg_one, step1)
+                    })
+                    .collect()
+            } else {
+                let ct = cranelift_type_for(et);
+                vals.iter()
+                    .map(|&v| {
+                        let zero = builder.ins().iconst(ct, 0);
+                        let one = builder.ins().iconst(ct, 1);
+                        let neg_one = builder.ins().iconst(ct, -1i64);
+                        let is_pos = builder.ins().icmp(IntCC::SignedGreaterThan, v, zero);
+                        let is_neg = builder.ins().icmp(IntCC::SignedLessThan, v, zero);
+                        let step1 = builder.ins().select(is_pos, one, zero);
+                        builder.ins().select(is_neg, neg_one, step1)
+                    })
+                    .collect()
+            };
+            Ok(vec![out])
+        }
+
+        Instruction::Minimum { lhs, rhs } => {
+            let l = get_vals(value_map, lhs)?;
+            let r = get_vals(value_map, rhs)?;
+            let et = rt.element_type;
+            let out = elementwise_binop(builder, l, r, |b, a, c| {
+                if is_float(et) {
+                    let cmp = b.ins().fcmp(FloatCC::LessThan, a, c);
+                    b.ins().select(cmp, a, c)
+                } else {
+                    let cmp = b.ins().icmp(IntCC::SignedLessThan, a, c);
+                    b.ins().select(cmp, a, c)
+                }
+            });
+            Ok(vec![out])
+        }
+
+        Instruction::Remainder { lhs, rhs } => {
+            if is_float(rt.element_type) {
+                lower_libm_binary(builder, value_map, lhs, rhs, libm_ids.fmod, jit_module)
+            } else {
+                let l = get_vals(value_map, lhs)?;
+                let r = get_vals(value_map, rhs)?;
+                let n = l.len().max(r.len());
+                let out: Vec<Value> = (0..n)
+                    .map(|i| {
+                        let lv = if i < l.len() { l[i] } else { l[0] };
+                        let rv = if i < r.len() { r[i] } else { r[0] };
+                        builder.ins().srem(lv, rv)
+                    })
+                    .collect();
+                Ok(vec![out])
+            }
+        }
+
+        Instruction::Clamp { operand, min, max } => {
+            let vals = get_vals(value_map, operand)?;
+            let mins = get_vals(value_map, min)?;
+            let maxs = get_vals(value_map, max)?;
+            let et = rt.element_type;
+            let n = vals.len();
+            let out: Vec<Value> = (0..n)
+                .map(|i| {
+                    let v = vals[i];
+                    let lo = if i < mins.len() { mins[i] } else { mins[0] };
+                    let hi = if i < maxs.len() { maxs[i] } else { maxs[0] };
+                    if is_float(et) {
+                        let clamped_lo = builder.ins().fmax(v, lo);
+                        builder.ins().fmin(clamped_lo, hi)
+                    } else {
+                        let gt_lo = builder.ins().icmp(IntCC::SignedGreaterThan, v, lo);
+                        let step1 = builder.ins().select(gt_lo, v, lo);
+                        let lt_hi = builder.ins().icmp(IntCC::SignedLessThan, step1, hi);
+                        builder.ins().select(lt_hi, step1, hi)
+                    }
+                })
+                .collect();
+            Ok(vec![out])
+        }
+
+        Instruction::Reverse {
+            operand,
+            dimensions,
+        } => {
+            let vals = get_vals(value_map, operand)?.clone();
+            let src_ty = type_map.get(operand).cloned().unwrap_or(rt.clone());
+            let shape = &src_ty.shape;
+            let n = vals.len();
+
+            if shape.is_empty() || n <= 1 {
+                return Ok(vec![vals]);
+            }
+
+            let mut result = vals.clone();
+            let rank = shape.len();
+            let strides: Vec<usize> = {
+                let mut s = vec![1usize; rank];
+                for i in (0..rank - 1).rev() {
+                    s[i] = s[i + 1] * shape[i + 1] as usize;
+                }
+                s
+            };
+
+            for &dim in dimensions {
+                let d = dim as usize;
+                let dim_size = shape[d] as usize;
+                if dim_size <= 1 {
+                    continue;
+                }
+                let mut next = result.clone();
+                for (flat_idx, slot) in next.iter_mut().enumerate().take(n) {
+                    let coord_d = (flat_idx / strides[d]) % dim_size;
+                    let reversed_coord = dim_size - 1 - coord_d;
+                    let src_idx =
+                        flat_idx - coord_d * strides[d] + reversed_coord * strides[d];
+                    *slot = result[src_idx];
+                }
+                result = next;
+            }
+            Ok(vec![result])
+        }
+
+        Instruction::Floor { operand } => {
+            let vals = get_vals(value_map, operand)?;
+            let out: Vec<Value> = vals.iter().map(|&v| builder.ins().floor(v)).collect();
+            Ok(vec![out])
+        }
+
+        Instruction::RoundNearestEven { operand } => {
+            let vals = get_vals(value_map, operand)?;
+            let out: Vec<Value> = vals
+                .iter()
+                .map(|&v| builder.ins().nearest(v))
+                .collect();
+            Ok(vec![out])
         }
 
         // ----- Comparison and select -----
@@ -1122,6 +1370,119 @@ fn lower_instruction(
             )])
         }
 
+        Instruction::Pad {
+            operand,
+            padding_value,
+            low,
+            high,
+            interior,
+        } => {
+            let vals = get_vals(value_map, operand)?.clone();
+            let pad_val = get_vals(value_map, padding_value)?[0];
+            let src_ty = type_map.get(operand).cloned().unwrap_or(rt.clone());
+
+            let is_noop = low.iter().all(|&x| x == 0)
+                && high.iter().all(|&x| x == 0)
+                && interior.iter().all(|&x| x == 0);
+            if is_noop {
+                return Ok(vec![vals]);
+            }
+
+            let n = rt.num_elements();
+            let rank = src_ty.shape.len();
+            let src_shape: Vec<usize> = src_ty.shape.iter().map(|&d| d as usize).collect();
+            let out_shape: Vec<usize> = rt.shape.iter().map(|&d| d as usize).collect();
+            let mut src_strides = vec![1usize; rank];
+            for i in (0..rank - 1).rev() {
+                src_strides[i] = src_strides[i + 1] * src_shape[i + 1];
+            }
+            let mut out_strides = vec![1usize; rank];
+            for i in (0..rank - 1).rev() {
+                out_strides[i] = out_strides[i + 1] * out_shape[i + 1];
+            }
+
+            let mut result = vec![pad_val; n];
+            for (src_flat, &src_val) in vals.iter().enumerate() {
+                let mut valid = true;
+                let mut out_flat = 0;
+                let mut remaining = src_flat;
+                for d in 0..rank {
+                    let coord = remaining / src_strides[d];
+                    remaining %= src_strides[d];
+                    let int_step = interior.get(d).copied().unwrap_or(0) as usize;
+                    let out_coord =
+                        low.get(d).copied().unwrap_or(0) as usize + coord * (1 + int_step);
+                    if out_coord >= out_shape[d] {
+                        valid = false;
+                        break;
+                    }
+                    out_flat += out_coord * out_strides[d];
+                }
+                if valid && out_flat < n {
+                    result[out_flat] = src_val;
+                }
+            }
+            Ok(vec![result])
+        }
+
+        Instruction::Scatter {
+            operand,
+            indices,
+            updates,
+        } => {
+            let vals = get_vals(value_map, operand)?.clone();
+            let idx_vals = get_vals(value_map, indices)?;
+            let upd_vals = get_vals(value_map, updates)?;
+            let et = rt.element_type;
+            let elem_sz = et.byte_size();
+
+            let total_bytes = vals.len() * elem_sz;
+            let ss = builder.create_sized_stack_slot(StackSlotData::new(
+                StackSlotKind::ExplicitSlot,
+                total_bytes as u32,
+                3,
+            ));
+            let base = builder.ins().stack_addr(ptr_type(), ss, 0);
+            for (i, &v) in vals.iter().enumerate() {
+                builder
+                    .ins()
+                    .store(MemFlags::trusted(), v, base, (i * elem_sz) as i32);
+            }
+
+            for (u_idx, &upd_v) in upd_vals.iter().enumerate() {
+                let raw_idx = if u_idx < idx_vals.len() {
+                    idx_vals[u_idx]
+                } else {
+                    idx_vals[0]
+                };
+                let idx_i64 = if builder.func.dfg.value_type(raw_idx) == types::I64 {
+                    raw_idx
+                } else if builder.func.dfg.value_type(raw_idx).bytes() < 8 {
+                    builder.ins().sextend(types::I64, raw_idx)
+                } else {
+                    raw_idx
+                };
+                let byte_offset = builder.ins().imul_imm(idx_i64, elem_sz as i64);
+                let addr = builder.ins().iadd(base, byte_offset);
+                builder.ins().store(MemFlags::trusted(), upd_v, addr, 0);
+            }
+
+            let ct = cranelift_type_for(et);
+            let mut result = Vec::with_capacity(vals.len());
+            for i in 0..vals.len() {
+                let v = builder
+                    .ins()
+                    .load(ct, MemFlags::trusted(), base, (i * elem_sz) as i32);
+                result.push(v);
+            }
+            Ok(vec![result])
+        }
+
+        Instruction::CustomCall {
+            call_target,
+            operands,
+        } => lower_custom_call(builder, call_target, operands, result_types, value_map, type_map, jit_module, libm_ids),
+
         Instruction::Return { .. } => Ok(vec![]),
     }
 }
@@ -1449,6 +1810,7 @@ fn lower_call(
         ));
         let ss_addr = builder.ins().stack_addr(ptr_type(), ss, 0);
         call_args.push(ss_addr);
+
         let _call = builder.ins().call(func_ref, &call_args);
 
         let mut result_groups = Vec::new();
@@ -1635,7 +1997,26 @@ fn convert_value(
         }
         (ElementType::I1, ElementType::I32) => builder.ins().uextend(types::I32, v),
         (ElementType::I1, ElementType::I64) => builder.ins().uextend(types::I64, v),
+        (ElementType::I1, ElementType::F64) => {
+            let ext = builder.ins().uextend(types::I64, v);
+            builder.ins().fcvt_from_uint(types::F64, ext)
+        }
+        (ElementType::I1, ElementType::F32) => {
+            let ext = builder.ins().uextend(types::I32, v);
+            builder.ins().fcvt_from_uint(types::F32, ext)
+        }
         (ElementType::I32, ElementType::I1) => builder.ins().ireduce(types::I8, v),
+        (ElementType::I64, ElementType::I1) => builder.ins().ireduce(types::I8, v),
+        (ElementType::F64, ElementType::I1) => {
+            let i = builder.ins().fcvt_to_sint(types::I32, v);
+            builder.ins().ireduce(types::I8, i)
+        }
+        (ElementType::UI32, ElementType::UI64) => builder.ins().uextend(types::I64, v),
+        (ElementType::UI64, ElementType::F64) => builder.ins().fcvt_from_uint(types::F64, v),
+        (ElementType::F64, ElementType::UI64) => builder.ins().fcvt_to_uint(types::I64, v),
+        (ElementType::I32, ElementType::F32) => {
+            builder.ins().fcvt_from_sint(types::F32, v)
+        }
         _ => v,
     }
 }
@@ -1756,31 +2137,41 @@ fn slice_tensor(vals: &[Value], src_shape: &[i64], starts: &[i64], limits: &[i64
     if src_shape.is_empty() {
         return vals.to_vec();
     }
-    if src_shape.len() == 1 {
-        let s = starts[0] as usize;
-        let e = limits[0] as usize;
-        return vals[s..e.min(vals.len())].to_vec();
+    let rank = src_shape.len();
+    let mut src_strides = vec![1usize; rank];
+    for i in (0..rank - 1).rev() {
+        src_strides[i] = src_strides[i + 1] * src_shape[i + 1] as usize;
     }
-    if src_shape.len() == 2 {
-        let cols = src_shape[1] as usize;
-        let r0 = starts[0] as usize;
-        let r1 = limits[0] as usize;
-        let c0 = starts.get(1).copied().unwrap_or(0) as usize;
-        let c1 = limits.get(1).copied().unwrap_or(cols as i64) as usize;
-        let mut out = Vec::new();
-        for r in r0..r1 {
-            for c in c0..c1 {
-                let idx = r * cols + c;
-                if idx < vals.len() {
-                    out.push(vals[idx]);
-                }
-            }
+
+    let slice_shape: Vec<usize> = (0..rank)
+        .map(|d| {
+            let s = starts.get(d).copied().unwrap_or(0) as usize;
+            let l = limits.get(d).copied().unwrap_or(src_shape[d]) as usize;
+            l - s
+        })
+        .collect();
+    let n_out: usize = slice_shape.iter().product();
+    let mut out = Vec::with_capacity(n_out);
+
+    let mut out_strides = vec![1usize; rank];
+    for i in (0..rank - 1).rev() {
+        out_strides[i] = out_strides[i + 1] * slice_shape[i + 1];
+    }
+
+    for flat_out in 0..n_out {
+        let mut src_flat = 0;
+        let mut remaining = flat_out;
+        for d in 0..rank {
+            let coord = remaining / out_strides[d];
+            remaining %= out_strides[d];
+            let src_coord = coord + starts.get(d).copied().unwrap_or(0) as usize;
+            src_flat += src_coord * src_strides[d];
         }
-        return out;
+        if src_flat < vals.len() {
+            out.push(vals[src_flat]);
+        }
     }
-    let s = starts[0] as usize;
-    let e = limits[0] as usize;
-    vals[s..e.min(vals.len())].to_vec()
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -1945,15 +2336,32 @@ fn lower_reduce(
 }
 
 fn apply_reduce_op(builder: &mut FunctionBuilder, acc: Value, v: Value, op: &ReduceOp) -> Value {
+    let val_type = builder.func.dfg.value_type(acc);
     match op {
-        ReduceOp::Add => builder.ins().fadd(acc, v),
+        ReduceOp::Add => {
+            if val_type.is_float() {
+                builder.ins().fadd(acc, v)
+            } else {
+                builder.ins().iadd(acc, v)
+            }
+        }
         ReduceOp::Minimum => {
-            let cmp = builder.ins().fcmp(FloatCC::LessThan, acc, v);
-            builder.ins().select(cmp, acc, v)
+            if val_type.is_float() {
+                let cmp = builder.ins().fcmp(FloatCC::LessThan, acc, v);
+                builder.ins().select(cmp, acc, v)
+            } else {
+                let cmp = builder.ins().icmp(IntCC::SignedLessThan, acc, v);
+                builder.ins().select(cmp, acc, v)
+            }
         }
         ReduceOp::Maximum => {
-            let cmp = builder.ins().fcmp(FloatCC::GreaterThan, acc, v);
-            builder.ins().select(cmp, acc, v)
+            if val_type.is_float() {
+                let cmp = builder.ins().fcmp(FloatCC::GreaterThan, acc, v);
+                builder.ins().select(cmp, acc, v)
+            } else {
+                let cmp = builder.ins().icmp(IntCC::SignedGreaterThan, acc, v);
+                builder.ins().select(cmp, acc, v)
+            }
         }
     }
 }
@@ -2110,7 +2518,8 @@ fn lower_dynamic_slice(
         strides[i] = strides[i + 1] * src_ty.shape[i + 1] as usize;
     }
 
-    // Compute the flat byte offset from dynamic start indices
+    // Compute the flat byte offset from dynamic start indices.
+    // Per StableHLO spec, indices are clamped to [0, dim_size - slice_size].
     let mut flat_offset = builder.ins().iconst(types::I64, 0);
     for d in 0..rank {
         if d < start_indices.len() {
@@ -2120,8 +2529,19 @@ fn lower_dynamic_slice(
             } else {
                 builder.ins().sextend(types::I64, idx)
             };
+            let max_idx = src_ty.shape[d] - slice_sizes.get(d).copied().unwrap_or(1);
+            let max_val = builder.ins().iconst(types::I64, max_idx);
+            let zero = builder.ins().iconst(types::I64, 0);
+            let clamped_lo = {
+                let cmp = builder.ins().icmp(IntCC::SignedGreaterThan, idx_i64, zero);
+                builder.ins().select(cmp, idx_i64, zero)
+            };
+            let clamped = {
+                let cmp = builder.ins().icmp(IntCC::SignedLessThan, clamped_lo, max_val);
+                builder.ins().select(cmp, clamped_lo, max_val)
+            };
             let stride_bytes = (strides[d] * elem_sz) as i64;
-            let contrib = builder.ins().imul_imm(idx_i64, stride_bytes);
+            let contrib = builder.ins().imul_imm(clamped, stride_bytes);
             flat_offset = builder.ins().iadd(flat_offset, contrib);
         }
     }
@@ -2169,6 +2589,7 @@ fn lower_dynamic_update_slice(
         strides[i] = strides[i + 1] * src_ty.shape[i + 1] as usize;
     }
 
+    let upd_shape = &_upd_ty.shape;
     let mut flat_offset = builder.ins().iconst(types::I64, 0);
     for d in 0..rank.min(start_indices.len()) {
         let idx = start_indices[d];
@@ -2177,8 +2598,20 @@ fn lower_dynamic_update_slice(
         } else {
             builder.ins().sextend(types::I64, idx)
         };
+        let upd_dim = upd_shape.get(d).copied().unwrap_or(1);
+        let max_idx = src_ty.shape[d] - upd_dim;
+        let max_val = builder.ins().iconst(types::I64, max_idx);
+        let zero = builder.ins().iconst(types::I64, 0);
+        let clamped_lo = {
+            let cmp = builder.ins().icmp(IntCC::SignedGreaterThan, idx_i64, zero);
+            builder.ins().select(cmp, idx_i64, zero)
+        };
+        let clamped = {
+            let cmp = builder.ins().icmp(IntCC::SignedLessThan, clamped_lo, max_val);
+            builder.ins().select(cmp, clamped_lo, max_val)
+        };
         let stride_bytes = (strides[d] * elem_sz) as i64;
-        let contrib = builder.ins().imul_imm(idx_i64, stride_bytes);
+        let contrib = builder.ins().imul_imm(clamped, stride_bytes);
         flat_offset = builder.ins().iadd(flat_offset, contrib);
     }
     let update_addr = builder.ins().iadd(base_addr, flat_offset);
@@ -2197,4 +2630,249 @@ fn lower_dynamic_update_slice(
         results.push(v);
     }
     results
+}
+
+#[allow(clippy::too_many_arguments)]
+fn lower_custom_call(
+    builder: &mut FunctionBuilder,
+    call_target: &str,
+    operands: &[ValueId],
+    result_types: &[TensorType],
+    value_map: &HashMap<ValueId, TensorVals>,
+    type_map: &HashMap<ValueId, TensorType>,
+    jit_module: &mut JITModule,
+    libm_ids: &LibmIds,
+) -> Result<Vec<TensorVals>, String> {
+    if call_target.starts_with("lapack_dgesdd") {
+        return lower_svd_custom_call(builder, operands, result_types, value_map, type_map, jit_module);
+    }
+    Err(format!("unsupported custom_call target: {call_target}"))
+}
+
+extern "C" fn svd_3x3(
+    a: *const f64,
+    u: *mut f64,
+    s: *mut f64,
+    vt: *mut f64,
+    info: *mut i32,
+) {
+    let a = unsafe { std::slice::from_raw_parts(a, 9) };
+    let u_out = unsafe { std::slice::from_raw_parts_mut(u, 9) };
+    let s_out = unsafe { std::slice::from_raw_parts_mut(s, 3) };
+    let vt_out = unsafe { std::slice::from_raw_parts_mut(vt, 9) };
+
+    let m = 3;
+    let mut mat = [0.0f64; 9];
+    mat.copy_from_slice(a);
+
+    // Jacobi SVD for small matrices
+    let mut u_mat = [
+        1.0, 0.0, 0.0,
+        0.0, 1.0, 0.0,
+        0.0, 0.0, 1.0,
+    ];
+    let mut v_mat = [
+        1.0, 0.0, 0.0,
+        0.0, 1.0, 0.0,
+        0.0, 0.0, 1.0,
+    ];
+
+    let idx = |r: usize, c: usize| r * m + c;
+
+    for _ in 0..100 {
+        let mut converged = true;
+        for p in 0..m {
+            for q in (p + 1)..m {
+                let mut alpha = 0.0;
+                let mut beta = 0.0;
+                let mut gamma = 0.0;
+                for k in 0..m {
+                    alpha += mat[idx(k, p)] * mat[idx(k, p)];
+                    beta += mat[idx(k, q)] * mat[idx(k, q)];
+                    gamma += mat[idx(k, p)] * mat[idx(k, q)];
+                }
+                if gamma.abs() < 1e-15 * (alpha * beta).sqrt().max(1e-300) {
+                    continue;
+                }
+                converged = false;
+                let zeta = (beta - alpha) / (2.0 * gamma);
+                let t = zeta.signum() / (zeta.abs() + (1.0 + zeta * zeta).sqrt());
+                let c = 1.0 / (1.0 + t * t).sqrt();
+                let s = t * c;
+
+                for k in 0..m {
+                    let akp = mat[idx(k, p)];
+                    let akq = mat[idx(k, q)];
+                    mat[idx(k, p)] = c * akp - s * akq;
+                    mat[idx(k, q)] = s * akp + c * akq;
+                }
+                for k in 0..m {
+                    let vkp = v_mat[idx(k, p)];
+                    let vkq = v_mat[idx(k, q)];
+                    v_mat[idx(k, p)] = c * vkp - s * vkq;
+                    v_mat[idx(k, q)] = s * vkp + c * vkq;
+                }
+            }
+        }
+        if converged {
+            break;
+        }
+    }
+
+    for j in 0..m {
+        let mut norm = 0.0;
+        for i in 0..m {
+            norm += mat[idx(i, j)] * mat[idx(i, j)];
+        }
+        let norm = norm.sqrt();
+        s_out[j] = norm;
+        if norm > 1e-300 {
+            for i in 0..m {
+                u_mat[idx(i, j)] = mat[idx(i, j)] / norm;
+            }
+        } else {
+            for i in 0..m {
+                u_mat[idx(i, j)] = if i == j { 1.0 } else { 0.0 };
+            }
+        }
+    }
+
+    // Sort singular values in descending order
+    for i in 0..m {
+        let mut max_idx = i;
+        for j in (i + 1)..m {
+            if s_out[j] > s_out[max_idx] {
+                max_idx = j;
+            }
+        }
+        if max_idx != i {
+            s_out.swap(i, max_idx);
+            for k in 0..m {
+                u_mat.swap(idx(k, i), idx(k, max_idx));
+                v_mat.swap(idx(k, i), idx(k, max_idx));
+            }
+        }
+    }
+
+    // Output: U is column-major in StableHLO (row-major in our flat layout)
+    u_out.copy_from_slice(&u_mat);
+    // V^T: transpose of V
+    for i in 0..m {
+        for j in 0..m {
+            vt_out[idx(i, j)] = v_mat[idx(j, i)];
+        }
+    }
+
+    unsafe { *info = 0 };
+}
+
+fn lower_svd_custom_call(
+    builder: &mut FunctionBuilder,
+    operands: &[ValueId],
+    result_types: &[TensorType],
+    value_map: &HashMap<ValueId, TensorVals>,
+    _type_map: &HashMap<ValueId, TensorType>,
+    jit_module: &mut JITModule,
+) -> Result<Vec<TensorVals>, String> {
+    let a_vals = get_vals(value_map, &operands[0])?;
+    let n = (a_vals.len() as f64).sqrt() as usize;
+    if n * n != a_vals.len() {
+        return Err(format!("SVD: non-square matrix ({} elements)", a_vals.len()));
+    }
+
+    let elem_sz = 8usize; // f64
+    let a_bytes = n * n * elem_sz;
+    let u_bytes = n * n * elem_sz;
+    let s_bytes = n * elem_sz;
+    let vt_bytes = n * n * elem_sz;
+    let info_bytes = 4;
+    let total = a_bytes + u_bytes + s_bytes + vt_bytes + info_bytes;
+
+    let ss = builder.create_sized_stack_slot(StackSlotData::new(
+        StackSlotKind::ExplicitSlot,
+        total as u32,
+        3,
+    ));
+    let base = builder.ins().stack_addr(ptr_type(), ss, 0);
+
+    // Store input matrix A
+    for (i, &v) in a_vals.iter().enumerate() {
+        builder
+            .ins()
+            .store(MemFlags::trusted(), v, base, (i * elem_sz) as i32);
+    }
+
+    let u_off = a_bytes as i32;
+    let s_off = (a_bytes + u_bytes) as i32;
+    let vt_off = (a_bytes + u_bytes + s_bytes) as i32;
+    let info_off = (a_bytes + u_bytes + s_bytes + vt_bytes) as i32;
+
+    let a_ptr = base;
+    let u_ptr = builder.ins().iadd_imm(base, u_off as i64);
+    let s_ptr = builder.ins().iadd_imm(base, s_off as i64);
+    let vt_ptr = builder.ins().iadd_imm(base, vt_off as i64);
+    let info_ptr = builder.ins().iadd_imm(base, info_off as i64);
+
+    let mut sig = jit_module.make_signature();
+    sig.call_conv = jit_module.isa().default_call_conv();
+    for _ in 0..5 {
+        sig.params.push(AbiParam::new(ptr_type()));
+    }
+    let svd_func_id = jit_module
+        .declare_function("__cranelift_svd_3x3", Linkage::Import, &sig)
+        .map_err(|e| format!("declare svd: {e}"))?;
+    let svd_ref = jit_module.declare_func_in_func(svd_func_id, builder.func);
+    builder
+        .ins()
+        .call(svd_ref, &[a_ptr, u_ptr, s_ptr, vt_ptr, info_ptr]);
+
+    // Read back results
+    // Result types from StableHLO: (tensor<NxNxf64>, tensor<Nxf64>, tensor<NxNxf64>, tensor<NxNxf64>, tensor<i32>)
+    let mut result_groups = Vec::new();
+
+    // Result 0: U (NxN f64) -- often the modified input
+    let mut u_vals = Vec::with_capacity(n * n);
+    for i in 0..(n * n) {
+        let v = builder
+            .ins()
+            .load(types::F64, MemFlags::trusted(), base, u_off + (i * elem_sz) as i32);
+        u_vals.push(v);
+    }
+    result_groups.push(u_vals);
+
+    // Result 1: S (N f64)
+    let mut s_vals = Vec::with_capacity(n);
+    for i in 0..n {
+        let v = builder
+            .ins()
+            .load(types::F64, MemFlags::trusted(), base, s_off + (i * elem_sz) as i32);
+        s_vals.push(v);
+    }
+    result_groups.push(s_vals);
+
+    // Result 2: Vt (NxN f64)
+    let mut vt_vals = Vec::with_capacity(n * n);
+    for i in 0..(n * n) {
+        let v = builder
+            .ins()
+            .load(types::F64, MemFlags::trusted(), base, vt_off + (i * elem_sz) as i32);
+        vt_vals.push(v);
+    }
+    result_groups.push(vt_vals);
+
+    // Result 3: another NxN (workspace, just return zeros)
+    if result_types.len() > 3 {
+        let zero = builder.ins().f64const(0.0);
+        result_groups.push(vec![zero; n * n]);
+    }
+
+    // Result 4: info (i32)
+    if result_types.len() > 4 {
+        let info_val = builder
+            .ins()
+            .load(types::I32, MemFlags::trusted(), base, info_off);
+        result_groups.push(vec![info_val]);
+    }
+
+    Ok(result_groups)
 }

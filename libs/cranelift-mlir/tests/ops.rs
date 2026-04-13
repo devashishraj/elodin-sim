@@ -728,3 +728,390 @@ module @module {
     let result = read_f64s(&out[0]);
     assert_f64s_close(&result, &[1.0, 6.0, 11.0]);
 }
+
+// ---- New elementwise / transcendental ops ----
+
+#[test]
+fn test_sine() {
+    let mlir = r#"
+module @module {
+  func.func public @main(%arg0: tensor<3xf64>) -> tensor<3xf64> {
+    %0 = stablehlo.sine %arg0 : tensor<3xf64>
+    return %0 : tensor<3xf64>
+  }
+}
+"#;
+    let in0 = f64_buf(&[0.0, std::f64::consts::FRAC_PI_2, std::f64::consts::PI]);
+    let out = run_mlir(mlir, &[&in0], &[24]);
+    let result = read_f64s(&out[0]);
+    assert_f64_close(result[0], 0.0);
+    assert_f64_close(result[1], 1.0);
+    assert!(result[2].abs() < 1e-15);
+}
+
+#[test]
+fn test_cosine() {
+    let mlir = r#"
+module @module {
+  func.func public @main(%arg0: tensor<3xf64>) -> tensor<3xf64> {
+    %0 = stablehlo.cosine %arg0 : tensor<3xf64>
+    return %0 : tensor<3xf64>
+  }
+}
+"#;
+    let in0 = f64_buf(&[0.0, std::f64::consts::FRAC_PI_2, std::f64::consts::PI]);
+    let out = run_mlir(mlir, &[&in0], &[24]);
+    let result = read_f64s(&out[0]);
+    assert_f64_close(result[0], 1.0);
+    assert!(result[1].abs() < 1e-15);
+    assert_f64_close(result[2], -1.0);
+}
+
+#[test]
+fn test_atan2() {
+    let mlir = r#"
+module @module {
+  func.func public @main(%arg0: tensor<3xf64>, %arg1: tensor<3xf64>) -> tensor<3xf64> {
+    %0 = stablehlo.atan2 %arg0, %arg1 : tensor<3xf64>
+    return %0 : tensor<3xf64>
+  }
+}
+"#;
+    let y = f64_buf(&[0.0, 1.0, -1.0]);
+    let x = f64_buf(&[1.0, 0.0, 0.0]);
+    let out = run_mlir(mlir, &[&y, &x], &[24]);
+    let result = read_f64s(&out[0]);
+    assert_f64_close(result[0], 0.0);
+    assert_f64_close(result[1], std::f64::consts::FRAC_PI_2);
+    assert_f64_close(result[2], -std::f64::consts::FRAC_PI_2);
+}
+
+#[test]
+fn test_abs_float() {
+    let mlir = r#"
+module @module {
+  func.func public @main(%arg0: tensor<3xf64>) -> tensor<3xf64> {
+    %0 = stablehlo.abs %arg0 : tensor<3xf64>
+    return %0 : tensor<3xf64>
+  }
+}
+"#;
+    let in0 = f64_buf(&[-3.0, 0.0, 5.0]);
+    let out = run_mlir(mlir, &[&in0], &[24]);
+    assert_f64s_close(&read_f64s(&out[0]), &[3.0, 0.0, 5.0]);
+}
+
+#[test]
+fn test_minimum() {
+    let mlir = r#"
+module @module {
+  func.func public @main(%arg0: tensor<3xf64>, %arg1: tensor<3xf64>) -> tensor<3xf64> {
+    %0 = stablehlo.minimum %arg0, %arg1 : tensor<3xf64>
+    return %0 : tensor<3xf64>
+  }
+}
+"#;
+    let in0 = f64_buf(&[1.0, 5.0, 3.0]);
+    let in1 = f64_buf(&[4.0, 2.0, 3.0]);
+    let out = run_mlir(mlir, &[&in0, &in1], &[24]);
+    assert_f64s_close(&read_f64s(&out[0]), &[1.0, 2.0, 3.0]);
+}
+
+#[test]
+fn test_sign() {
+    let mlir = r#"
+module @module {
+  func.func public @main(%arg0: tensor<3xf64>) -> tensor<3xf64> {
+    %0 = stablehlo.sign %arg0 : tensor<3xf64>
+    return %0 : tensor<3xf64>
+  }
+}
+"#;
+    let in0 = f64_buf(&[-3.5, 0.0, 7.2]);
+    let out = run_mlir(mlir, &[&in0], &[24]);
+    assert_f64s_close(&read_f64s(&out[0]), &[-1.0, 0.0, 1.0]);
+}
+
+#[test]
+fn test_remainder() {
+    let mlir = r#"
+module @module {
+  func.func public @main(%arg0: tensor<3xf64>, %arg1: tensor<3xf64>) -> tensor<3xf64> {
+    %0 = stablehlo.remainder %arg0, %arg1 : tensor<3xf64>
+    return %0 : tensor<3xf64>
+  }
+}
+"#;
+    let in0 = f64_buf(&[7.0, 10.0, -5.5]);
+    let in1 = f64_buf(&[3.0, 3.0, 2.0]);
+    let out = run_mlir(mlir, &[&in0, &in1], &[24]);
+    let result = read_f64s(&out[0]);
+    assert_f64_close(result[0], 1.0);
+    assert_f64_close(result[1], 1.0);
+    assert_f64_close(result[2], -1.5);
+}
+
+#[test]
+fn test_acos() {
+    let mlir = r#"
+module @module {
+  func.func public @main(%arg0: tensor<3xf64>) -> tensor<3xf64> {
+    %0 = chlo.acos %arg0 : tensor<f64> -> tensor<f64>
+    return %0 : tensor<3xf64>
+  }
+}
+"#;
+    let in0 = f64_buf(&[1.0, 0.0, -1.0]);
+    let out = run_mlir(mlir, &[&in0], &[24]);
+    let result = read_f64s(&out[0]);
+    assert_f64_close(result[0], 0.0);
+    assert_f64_close(result[1], std::f64::consts::FRAC_PI_2);
+    assert_f64_close(result[2], std::f64::consts::PI);
+}
+
+#[test]
+fn test_exponential() {
+    let mlir = r#"
+module @module {
+  func.func public @main(%arg0: tensor<3xf64>) -> tensor<3xf64> {
+    %0 = stablehlo.exponential %arg0 : tensor<3xf64>
+    return %0 : tensor<3xf64>
+  }
+}
+"#;
+    let in0 = f64_buf(&[0.0, 1.0, -1.0]);
+    let out = run_mlir(mlir, &[&in0], &[24]);
+    let result = read_f64s(&out[0]);
+    assert_f64_close(result[0], 1.0);
+    assert_f64_close(result[1], std::f64::consts::E);
+    assert_f64_close(result[2], 1.0 / std::f64::consts::E);
+}
+
+#[test]
+fn test_log() {
+    let mlir = r#"
+module @module {
+  func.func public @main(%arg0: tensor<3xf64>) -> tensor<3xf64> {
+    %0 = stablehlo.log %arg0 : tensor<3xf64>
+    return %0 : tensor<3xf64>
+  }
+}
+"#;
+    let in0 = f64_buf(&[1.0, std::f64::consts::E, 10.0]);
+    let out = run_mlir(mlir, &[&in0], &[24]);
+    let result = read_f64s(&out[0]);
+    assert_f64_close(result[0], 0.0);
+    assert_f64_close(result[1], 1.0);
+    assert_f64_close(result[2], 10.0_f64.ln());
+}
+
+#[test]
+fn test_clamp() {
+    let mlir = r#"
+module @module {
+  func.func public @main(%arg0: tensor<3xf64>) -> tensor<3xf64> {
+    %lo = stablehlo.constant dense<-1.0> : tensor<f64>
+    %hi = stablehlo.constant dense<1.0> : tensor<f64>
+    %0 = stablehlo.clamp %lo, %arg0, %hi : (tensor<f64>, tensor<3xf64>, tensor<f64>) -> tensor<3xf64>
+    return %0 : tensor<3xf64>
+  }
+}
+"#;
+    let in0 = f64_buf(&[-5.0, 0.5, 3.0]);
+    let out = run_mlir(mlir, &[&in0], &[24]);
+    assert_f64s_close(&read_f64s(&out[0]), &[-1.0, 0.5, 1.0]);
+}
+
+#[test]
+fn test_power() {
+    let mlir = r#"
+module @module {
+  func.func public @main(%arg0: tensor<3xf64>, %arg1: tensor<3xf64>) -> tensor<3xf64> {
+    %0 = stablehlo.power %arg0, %arg1 : tensor<3xf64>
+    return %0 : tensor<3xf64>
+  }
+}
+"#;
+    let base = f64_buf(&[2.0, 3.0, 10.0]);
+    let exp = f64_buf(&[3.0, 2.0, 0.5]);
+    let out = run_mlir(mlir, &[&base, &exp], &[24]);
+    let result = read_f64s(&out[0]);
+    assert_f64_close(result[0], 8.0);
+    assert_f64_close(result[1], 9.0);
+    assert_f64_close(result[2], 10.0_f64.sqrt());
+}
+
+#[test]
+fn test_reverse() {
+    let mlir = r#"
+module @module {
+  func.func public @main(%arg0: tensor<4xf64>) -> tensor<4xf64> {
+    %0 = stablehlo.reverse %arg0, dims = [0] : tensor<4xf64>
+    return %0 : tensor<4xf64>
+  }
+}
+"#;
+    let in0 = f64_buf(&[1.0, 2.0, 3.0, 4.0]);
+    let out = run_mlir(mlir, &[&in0], &[32]);
+    assert_f64s_close(&read_f64s(&out[0]), &[4.0, 3.0, 2.0, 1.0]);
+}
+
+#[test]
+fn test_tanh() {
+    let mlir = r#"
+module @module {
+  func.func public @main(%arg0: tensor<3xf64>) -> tensor<3xf64> {
+    %0 = stablehlo.tanh %arg0 : tensor<3xf64>
+    return %0 : tensor<3xf64>
+  }
+}
+"#;
+    let in0 = f64_buf(&[0.0, 1.0, -1.0]);
+    let out = run_mlir(mlir, &[&in0], &[24]);
+    let result = read_f64s(&out[0]);
+    assert_f64_close(result[0], 0.0);
+    assert_f64_close(result[1], 1.0_f64.tanh());
+    assert_f64_close(result[2], (-1.0_f64).tanh());
+}
+
+#[test]
+fn test_ssa_shadow_redefine() {
+    let mlir = r#"
+module @module {
+  func.func private @use_pair(%arg0: tensor<2xui32>) -> tensor<2xui32> {
+    return %arg0 : tensor<2xui32>
+  }
+  func.func public @main(%arg0: tensor<i64>) -> (tensor<2xui32>, tensor<i64>) {
+    %c = stablehlo.constant dense<[42, 99]> : tensor<2xui32>
+    %0 = call @use_pair(%c) : (tensor<2xui32>) -> tensor<2xui32>
+    %c = stablehlo.constant dense<7> : tensor<i64>
+    %1 = stablehlo.add %arg0, %c : tensor<i64>
+    return %0, %1 : tensor<2xui32>, tensor<i64>
+  }
+}
+"#;
+    let input = 10i64.to_le_bytes().to_vec();
+    let out = run_mlir(mlir, &[&input], &[8, 8]);
+    let seed: Vec<u32> = out[0]
+        .chunks_exact(4)
+        .map(|c| u32::from_le_bytes(c.try_into().unwrap()))
+        .collect();
+    let sum = i64::from_le_bytes(out[1].as_slice().try_into().unwrap());
+    assert_eq!(seed, vec![42, 99], "First %c definition corrupted by redefinition");
+    assert_eq!(sum, 17, "Second %c definition incorrect");
+}
+
+#[test]
+fn test_gather_i32_indices_1d() {
+    let mlir = r#"
+module @module {
+  func.func public @main(%arg0: tensor<5xf64>, %arg1: tensor<3x1xi32>) -> tensor<3xf64> {
+    %0 = "stablehlo.gather"(%arg0, %arg1) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0], start_index_map = [0], index_vector_dim = 1>, indices_are_sorted = false, slice_sizes = array<i64: 1>}> : (tensor<5xf64>, tensor<3x1xi32>) -> tensor<3xf64>
+    return %0 : tensor<3xf64>
+  }
+}
+"#;
+    let data = f64_buf(&[10.0, 20.0, 30.0, 40.0, 50.0]);
+    let indices = i32_buf(&[0, 2, 4]);
+    let out = run_mlir(mlir, &[&data, &indices], &[24]);
+    assert_f64s_close(&read_f64s(&out[0]), &[10.0, 30.0, 50.0]);
+}
+
+#[test]
+fn test_tan() {
+    let mlir = r#"
+module @module {
+  func.func public @main(%arg0: tensor<3xf64>) -> tensor<3xf64> {
+    %0 = stablehlo.tan %arg0 : tensor<3xf64>
+    return %0 : tensor<3xf64>
+  }
+}
+"#;
+    let in0 = f64_buf(&[0.0, std::f64::consts::FRAC_PI_4, -std::f64::consts::FRAC_PI_4]);
+    let out = run_mlir(mlir, &[&in0], &[24]);
+    let result = read_f64s(&out[0]);
+    assert!(result[0].abs() < 1e-15);
+    assert_f64_close(result[1], 1.0);
+    assert_f64_close(result[2], -1.0);
+}
+
+#[test]
+fn test_floor() {
+    let mlir = r#"
+module @module {
+  func.func public @main(%arg0: tensor<3xf64>) -> tensor<3xf64> {
+    %0 = stablehlo.floor %arg0 : tensor<3xf64>
+    return %0 : tensor<3xf64>
+  }
+}
+"#;
+    let in0 = f64_buf(&[1.7, -0.3, 3.0]);
+    let out = run_mlir(mlir, &[&in0], &[24]);
+    assert_f64s_close(&read_f64s(&out[0]), &[1.0, -1.0, 3.0]);
+}
+
+#[test]
+fn test_many_args_call_and_value_survival() {
+    // Tests: 1) 32-arg function call works 2) return values survive past a 32-arg sret call
+    let mlir = r#"
+module @module {
+  func.func private @noise(%arg0: tensor<f64>, %arg1: tensor<3xf64>) -> tensor<3xf64> {
+    %0 = stablehlo.broadcast_in_dim %arg0, dims = [] : (tensor<f64>) -> tensor<3xf64>
+    %1 = stablehlo.add %arg1, %0 : tensor<3xf64>
+    return %1 : tensor<3xf64>
+  }
+  func.func private @big_sret(%a0: tensor<f64>, %a1: tensor<f64>, %a2: tensor<f64>,
+    %a3: tensor<3xf64>, %a4: tensor<3xf64>) -> (tensor<3xf64>, tensor<3xf64>, tensor<3xf64>) {
+    %s = stablehlo.add %a3, %a4 : tensor<3xf64>
+    %b0 = stablehlo.broadcast_in_dim %a0, dims = [] : (tensor<f64>) -> tensor<3xf64>
+    %r0 = stablehlo.add %s, %b0 : tensor<3xf64>
+    %b1 = stablehlo.broadcast_in_dim %a1, dims = [] : (tensor<f64>) -> tensor<3xf64>
+    %r1 = stablehlo.add %s, %b1 : tensor<3xf64>
+    %b2 = stablehlo.broadcast_in_dim %a2, dims = [] : (tensor<f64>) -> tensor<3xf64>
+    %r2 = stablehlo.add %s, %b2 : tensor<3xf64>
+    return %r0, %r1, %r2 : tensor<3xf64>, tensor<3xf64>, tensor<3xf64>
+  }
+  func.func public @main(%tick: tensor<f64>, %bias: tensor<3xf64>) -> (tensor<3xf64>, tensor<3xf64>) {
+    %noise_out = call @noise(%tick, %bias) : (tensor<f64>, tensor<3xf64>) -> tensor<3xf64>
+    %c1 = stablehlo.constant dense<1.0> : tensor<f64>
+    %c2 = stablehlo.constant dense<2.0> : tensor<f64>
+    %c3 = stablehlo.constant dense<3.0> : tensor<f64>
+    %sret_out:3 = call @big_sret(%c1, %c2, %c3, %noise_out, %bias) : (tensor<f64>, tensor<f64>, tensor<f64>, tensor<3xf64>, tensor<3xf64>) -> (tensor<3xf64>, tensor<3xf64>, tensor<3xf64>)
+    %next_tick = stablehlo.add %tick, %c1 : tensor<f64>
+    %noise_out2 = call @noise(%next_tick, %noise_out) : (tensor<f64>, tensor<3xf64>) -> tensor<3xf64>
+    return %noise_out, %noise_out2 : tensor<3xf64>, tensor<3xf64>
+  }
+}
+"#;
+    let tick = f64_buf(&[0.0]);
+    let bias = f64_buf(&[10.0, 20.0, 30.0]);
+    let out = run_mlir(mlir, &[&tick, &bias], &[24, 24]);
+    let r0 = read_f64s(&out[0]); // noise_out = bias + tick = [10, 20, 30]
+    let r1 = read_f64s(&out[1]); // noise_out2 = noise_out + (tick+1) = [11, 21, 31]
+    assert_f64s_close(&r0, &[10.0, 20.0, 30.0]);
+    assert_f64s_close(&r1, &[11.0, 21.0, 31.0]);
+}
+
+#[test]
+fn test_dynamic_slice_clamps_out_of_bounds() {
+    let mlir = r#"
+module @module {
+  func.func public @main(%arg0: tensor<4x3xf64>, %arg1: tensor<i32>) -> tensor<1x3xf64> {
+    %c0 = stablehlo.constant dense<0> : tensor<i32>
+    %0 = stablehlo.dynamic_slice %arg0, %arg1, %c0, sizes = [1, 3] : (tensor<4x3xf64>, tensor<i32>, tensor<i32>) -> tensor<1x3xf64>
+    return %0 : tensor<1x3xf64>
+  }
+}
+"#;
+    // 4x3 matrix: row0=[1,2,3], row1=[4,5,6], row2=[7,8,9], row3=[10,11,12]
+    let data = f64_buf(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0]);
+    // Index 10 is way out of bounds (max valid = 3), should clamp to row 3
+    let idx = i32_buf(&[10]);
+    let out = run_mlir(mlir, &[&data, &idx], &[24]);
+    assert_f64s_close(&read_f64s(&out[0]), &[10.0, 11.0, 12.0]);
+
+    // Index -5 is negative, should clamp to row 0
+    let idx_neg = i32_buf(&[-5]);
+    let out_neg = run_mlir(mlir, &[&data, &idx_neg], &[24]);
+    assert_f64s_close(&read_f64s(&out_neg[0]), &[1.0, 2.0, 3.0]);
+}

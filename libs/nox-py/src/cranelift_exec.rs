@@ -18,6 +18,7 @@ pub struct CraneliftExec {
     output_keep_mask: Vec<bool>,
     mutable_overlap: Vec<(usize, usize)>,
     output_buffers: Vec<Vec<u8>>,
+    dup_scratch: Vec<u8>,
     _compiled: cranelift_mlir::lower::CompiledModule,
 }
 
@@ -71,10 +72,13 @@ impl CraneliftExec {
             .collect();
 
         let mut output_buffers = Vec::new();
+        let mut max_buf_size = 0usize;
         for id in &output_ids {
             let col = world.column_by_id(*id).ok_or(Error::ComponentNotFound)?;
+            max_buf_size = max_buf_size.max(col.column.len());
             output_buffers.push(vec![0u8; col.column.len()]);
         }
+        let dup_scratch = vec![0u8; max_buf_size.max(1024)];
 
         Ok(Self {
             metadata,
@@ -84,6 +88,7 @@ impl CraneliftExec {
             output_keep_mask,
             mutable_overlap,
             output_buffers,
+            dup_scratch,
             _compiled: compiled,
         })
     }
@@ -115,7 +120,7 @@ impl CraneliftExec {
                     output_ptrs.push(self.output_buffers[dedup_idx].as_mut_ptr());
                     dedup_idx += 1;
                 } else {
-                    output_ptrs.push(std::ptr::null_mut());
+                    output_ptrs.push(self.dup_scratch.as_mut_ptr());
                 }
             }
 

@@ -315,6 +315,80 @@ pub enum Instruction {
         update: ValueId,
         start_indices: Vec<ValueId>,
     },
+    Sine {
+        operand: ValueId,
+    },
+    Cosine {
+        operand: ValueId,
+    },
+    Atan2 {
+        lhs: ValueId,
+        rhs: ValueId,
+    },
+    Abs {
+        operand: ValueId,
+    },
+    Minimum {
+        lhs: ValueId,
+        rhs: ValueId,
+    },
+    Sign {
+        operand: ValueId,
+    },
+    Remainder {
+        lhs: ValueId,
+        rhs: ValueId,
+    },
+    Acos {
+        operand: ValueId,
+    },
+    Exponential {
+        operand: ValueId,
+    },
+    Log {
+        operand: ValueId,
+    },
+    Clamp {
+        operand: ValueId,
+        min: ValueId,
+        max: ValueId,
+    },
+    Power {
+        lhs: ValueId,
+        rhs: ValueId,
+    },
+    Reverse {
+        operand: ValueId,
+        dimensions: Vec<i64>,
+    },
+    Tanh {
+        operand: ValueId,
+    },
+    Tan {
+        operand: ValueId,
+    },
+    Floor {
+        operand: ValueId,
+    },
+    RoundNearestEven {
+        operand: ValueId,
+    },
+    Pad {
+        operand: ValueId,
+        padding_value: ValueId,
+        low: Vec<i64>,
+        high: Vec<i64>,
+        interior: Vec<i64>,
+    },
+    Scatter {
+        operand: ValueId,
+        indices: ValueId,
+        updates: ValueId,
+    },
+    CustomCall {
+        call_target: String,
+        operands: Vec<ValueId>,
+    },
 }
 
 #[derive(Debug, Clone)]
