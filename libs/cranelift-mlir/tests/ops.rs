@@ -294,9 +294,10 @@ module @module {
 "#;
     let a = f64_buf(&[1.0, 2.0, 0.0, 0.0, 3.0, 1.0, 2.0, 0.0, 4.0]);
     let out = run_mlir(mlir, &[&a], &[72, 24, 72, 72, 4]);
-    let u = read_f64s(&out[0]);
+    // XLA convention: (A_overwritten, sigma, U, VT, info)
+    let u = read_f64s(&out[2]);
     let s = read_f64s(&out[1]);
-    let vt = read_f64s(&out[2]);
+    let vt = read_f64s(&out[3]);
     eprintln!("U: {:?}", u);
     eprintln!("S: {:?}", s);
     eprintln!("VT: {:?}", vt);
@@ -2857,4 +2858,107 @@ module @module {
     let out = run_mlir_mem(mlir, &[&base, &c_buf], &[8]);
     let result = read_f64s(&out[0]);
     assert!((result[0] - 65.0).abs() < 1e-6, "result = {}, expected 65.0", result[0]);
+}
+
+#[test]
+fn test_dot_general_1d_x_2d() {
+    let mlir = r#"
+module @module {
+  func.func public @main(%arg0: tensor<3xf64>, %arg1: tensor<2x3xf64>) -> tensor<2xf64> {
+    %0 = stablehlo.dot_general %arg0, %arg1, contracting_dims = [0] x [1], precision = [DEFAULT, DEFAULT] : (tensor<3xf64>, tensor<2x3xf64>) -> tensor<2xf64>
+    return %0 : tensor<2xf64>
+  }
+}
+"#;
+    // lhs = [1, 2, 3]
+    // rhs = [[4, 5, 6],
+    //        [7, 8, 9]]
+    // result[0] = 1*4 + 2*5 + 3*6 = 32
+    // result[1] = 1*7 + 2*8 + 3*9 = 50
+    let lhs = f64_buf(&[1.0, 2.0, 3.0]);
+    let rhs = f64_buf(&[4.0, 5.0, 6.0, 7.0, 8.0, 9.0]);
+    let out = run_mlir(mlir, &[&lhs, &rhs], &[16]);
+    let result = read_f64s(&out[0]);
+    assert_f64s_close(&result, &[32.0, 50.0]);
+}
+
+#[test]
+fn test_iota_2d_dim0() {
+    let mlir = r#"
+module @module {
+  func.func public @main() -> tensor<3x3xi64> {
+    %0 = stablehlo.iota dim = 0 : tensor<3x3xi64>
+    return %0 : tensor<3x3xi64>
+  }
+}
+"#;
+    let out = run_mlir(mlir, &[], &[72]);
+    let result: Vec<i64> = out[0]
+        .chunks(8)
+        .map(|c| i64::from_le_bytes(c.try_into().unwrap()))
+        .collect();
+    // dim=0: each element = row index
+    // [[0,0,0], [1,1,1], [2,2,2]]
+    assert_eq!(result, vec![0, 0, 0, 1, 1, 1, 2, 2, 2]);
+}
+
+#[test]
+fn test_iota_2d_dim1() {
+    let mlir = r#"
+module @module {
+  func.func public @main() -> tensor<3x3xi64> {
+    %0 = stablehlo.iota dim = 1 : tensor<3x3xi64>
+    return %0 : tensor<3x3xi64>
+  }
+}
+"#;
+    let out = run_mlir(mlir, &[], &[72]);
+    let result: Vec<i64> = out[0]
+        .chunks(8)
+        .map(|c| i64::from_le_bytes(c.try_into().unwrap()))
+        .collect();
+    // dim=1: each element = column index
+    // [[0,1,2], [0,1,2], [0,1,2]]
+    assert_eq!(result, vec![0, 1, 2, 0, 1, 2, 0, 1, 2]);
+}
+
+#[test]
+fn test_identity_matrix_via_iota() {
+    let mlir = r#"
+module @module {
+  func.func public @main(%arg0: tensor<3x3xf64>) -> tensor<3x3xf64> {
+    %0 = stablehlo.iota dim = 0 : tensor<3x3xi64>
+    %1 = stablehlo.iota dim = 1 : tensor<3x3xi64>
+    %2 = stablehlo.compare  EQ, %0, %1,  SIGNED : (tensor<3x3xi64>, tensor<3x3xi64>) -> tensor<3x3xi1>
+    %3 = stablehlo.convert %2 : (tensor<3x3xi1>) -> tensor<3x3xf64>
+    %4 = stablehlo.dot_general %3, %arg0, contracting_dims = [1] x [0], precision = [DEFAULT, DEFAULT] : (tensor<3x3xf64>, tensor<3x3xf64>) -> tensor<3x3xf64>
+    return %4 : tensor<3x3xf64>
+  }
+}
+"#;
+    // I * A = A
+    let a = f64_buf(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]);
+    let out = run_mlir(mlir, &[&a], &[72]);
+    let result = read_f64s(&out[0]);
+    assert_f64s_close(&result, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]);
+}
+
+#[test]
+fn test_reduce_and_bool() {
+    let mlir = r#"
+module @module {
+  func.func public @main(%arg0: tensor<4x1xi1>) -> tensor<4xi1> {
+    %c = stablehlo.constant dense<true> : tensor<i1>
+    %0 = stablehlo.reduce(%arg0 init: %c) applies stablehlo.and across dimensions = [1] : (tensor<4x1xi1>, tensor<i1>) -> tensor<4xi1>
+    return %0 : tensor<4xi1>
+  }
+}
+"#;
+    // input: [[true], [false], [true], [false]]
+    // AND-reduce across dim 1: init=true, each row has 1 element
+    // result: [true AND true, true AND false, true AND true, true AND false]
+    //       = [true, false, true, false] = [1, 0, 1, 0]
+    let input: Vec<u8> = vec![1, 0, 1, 0];
+    let out = run_mlir(mlir, &[&input], &[4]);
+    assert_eq!(out[0], vec![1, 0, 1, 0]);
 }

@@ -160,6 +160,8 @@ pub enum ReduceOp {
     Add,
     Minimum,
     Maximum,
+    And,
+    Or,
 }
 
 #[derive(Debug, Clone)]

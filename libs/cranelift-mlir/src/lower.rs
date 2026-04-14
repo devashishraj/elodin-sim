@@ -2241,6 +2241,9 @@ fn lower_instruction_mem(
                 ReduceOp::Add => trt_ids.reduce_sum_f64,
                 ReduceOp::Maximum => trt_ids.reduce_max_f64,
                 ReduceOp::Minimum => trt_ids.reduce_min_f64,
+                ReduceOp::And | ReduceOp::Or => {
+                    return Err(format!("mem: reduce {:?} not yet supported", op));
+                }
             };
             let n_in = src_ty.num_elements();
             let n_out = n;
@@ -3272,15 +3275,23 @@ fn lower_instruction(
             Ok(vec![out])
         }
 
-        Instruction::Iota { dimension: _ } => {
+        Instruction::Iota { dimension } => {
             let n = rt.num_elements();
             let ct = cranelift_type_for(rt.element_type);
+            let dim = *dimension as usize;
+            let shape: Vec<usize> = rt.shape.iter().map(|&d| d as usize).collect();
+            let rank = shape.len();
+            let mut strides = vec![1usize; rank];
+            for d in (0..rank.saturating_sub(1)).rev() {
+                strides[d] = strides[d + 1] * shape[d + 1];
+            }
             let out: Vec<Value> = (0..n)
-                .map(|i| {
+                .map(|flat| {
+                    let idx_along_dim = (flat / strides[dim]) % shape[dim];
                     if is_float(rt.element_type) {
-                        builder.ins().f64const(i as f64)
+                        builder.ins().f64const(idx_along_dim as f64)
                     } else {
-                        builder.ins().iconst(ct, i as i64)
+                        builder.ins().iconst(ct, idx_along_dim as i64)
                     }
                 })
                 .collect();
@@ -4389,6 +4400,35 @@ fn lower_dot_general(
         return vec![acc];
     }
 
+    if l_ty.rank() == 1 && r_ty.rank() == 2 {
+        let rhs_contract_dim = dims.rhs_contracting[0] as usize;
+        let k = l_ty.shape[0] as usize;
+        let rhs_rows = r_ty.shape[0] as usize;
+        let rhs_cols = r_ty.shape[1] as usize;
+        let out_size = if rhs_contract_dim == 1 {
+            rhs_rows
+        } else {
+            rhs_cols
+        };
+        let mut out = Vec::new();
+        for i in 0..out_size {
+            let zero = builder.ins().f64const(0.0);
+            let mut acc = zero;
+            for j in 0..k {
+                let lv = l[j];
+                let rv = if rhs_contract_dim == 1 {
+                    r[i * rhs_cols + j]
+                } else {
+                    r[j * rhs_cols + i]
+                };
+                let prod = builder.ins().fmul(lv, rv);
+                acc = builder.ins().fadd(acc, prod);
+            }
+            out.push(acc);
+        }
+        return out;
+    }
+
     if l_ty.rank() == 2 && r_ty.rank() == 1 {
         let rows = l_ty.shape[0] as usize;
         let cols = l_ty.shape[1] as usize;
@@ -4524,6 +4564,8 @@ fn apply_reduce_op(builder: &mut FunctionBuilder, acc: Value, v: Value, op: &Red
                 builder.ins().select(cmp, acc, v)
             }
         }
+        ReduceOp::And => builder.ins().band(acc, v),
+        ReduceOp::Or => builder.ins().bor(acc, v),
     }
 }
 
@@ -5340,20 +5382,20 @@ fn lower_svd_custom_call(
         .ins()
         .call(func_ref, &[base, n_val, u_ptr, s_ptr, vt_ptr, info_ptr]);
 
+    // XLA dgesdd_ffi convention: (A_overwritten, sigma, U, VT, info)
+    // With JOBZ='S', A is overwritten with U columns, so result[0] = U.
     let mut result_groups = Vec::new();
-    result_groups.push(load_f64_vals(builder, n * n, base, u_off));
-    result_groups.push(load_f64_vals(builder, n, base, s_off));
-    result_groups.push(load_f64_vals(builder, n * n, base, vt_off));
-
+    result_groups.push(load_f64_vals(builder, n * n, base, u_off)); // [0] A overwritten = U
+    result_groups.push(load_f64_vals(builder, n, base, s_off)); // [1] sigma
+    result_groups.push(load_f64_vals(builder, n * n, base, u_off)); // [2] U
     if result_types.len() > 3 {
-        let zero = builder.ins().f64const(0.0);
-        result_groups.push(vec![zero; n * n]);
+        result_groups.push(load_f64_vals(builder, n * n, base, vt_off)); // [3] VT
     }
     if result_types.len() > 4 {
         let info_val = builder
             .ins()
             .load(types::I32, MemFlags::trusted(), base, info_off);
-        result_groups.push(vec![info_val]);
+        result_groups.push(vec![info_val]); // [4] info
     }
 
     Ok(result_groups)

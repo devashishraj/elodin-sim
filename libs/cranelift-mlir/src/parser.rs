@@ -845,6 +845,10 @@ fn parse_reduce_op(
         ReduceOp::Minimum
     } else if full_text.contains("stablehlo.maximum") {
         ReduceOp::Maximum
+    } else if full_text.contains("stablehlo.and") {
+        ReduceOp::And
+    } else if full_text.contains("stablehlo.or") {
+        ReduceOp::Or
     } else {
         ReduceOp::Add
     };
