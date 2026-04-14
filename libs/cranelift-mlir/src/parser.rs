@@ -1300,11 +1300,33 @@ fn parse_custom_call_op(
     let _ = ')'.parse_next(input)?;
     ws(input)?;
 
-    // Skip everything until the result type annotation
+    // Capture rest of line, extract backend_config and result types
     let rest = take_till(0.., '\n').parse_next(input)?;
     let _ = opt('\n').parse_next(input)?;
 
     let ty_str = rest.trim();
+
+    let mut backend_config = std::collections::HashMap::new();
+    if let Some(bc_start) = ty_str.find("mhlo.backend_config = {") {
+        let after = &ty_str[bc_start + "mhlo.backend_config = {".len()..];
+        if let Some(bc_end) = after.find('}') {
+            let bc_inner = &after[..bc_end];
+            for kv in bc_inner.split(',') {
+                let kv = kv.trim();
+                if kv.is_empty() {
+                    continue;
+                }
+                if let Some((key, val_part)) = kv.split_once('=') {
+                    let key = key.trim().to_string();
+                    let val_str = val_part.trim().split(':').next().unwrap_or("").trim();
+                    if let Ok(v) = val_str.parse::<i64>() {
+                        backend_config.insert(key, v);
+                    }
+                }
+            }
+        }
+    }
+
     let mut types = Vec::new();
     if let Some(after_arrow) = ty_str.rfind("-> ") {
         let result_part = &ty_str[after_arrow + 3..];
@@ -1333,6 +1355,7 @@ fn parse_custom_call_op(
         instr: Instruction::CustomCall {
             call_target,
             operands,
+            backend_config,
         },
     }))
 }

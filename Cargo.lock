@@ -3832,6 +3832,7 @@ dependencies = [
  "cranelift-jit",
  "cranelift-module",
  "cranelift-native",
+ "faer",
  "serde",
  "serde_json",
  "winnow 0.7.15",

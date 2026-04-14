@@ -135,6 +135,474 @@ fn reference_erf_inv(x: f64) -> f64 {
     }
 }
 
+// ---- LAPACK ops ----
+
+#[test]
+fn test_lapack_dgetrf_2x2() {
+    // A = [[4, 3], [6, 3]] -> LU with partial pivoting
+    // LAPACK should swap rows: pivot = [2, 2]
+    // L = [[1, 0], [2/3, 1]], U = [[6, 3], [0, 1]]
+    let mlir = r#"
+module @module {
+  func.func public @main(%arg0: tensor<2x2xf64>) -> (tensor<2x2xf64>, tensor<2xi32>, tensor<i32>) {
+    %0:3 = stablehlo.custom_call @lapack_dgetrf_ffi(%arg0) {backend_config = "", mhlo.backend_config = {}} -> (tensor<2x2xf64>, tensor<2xi32>, tensor<i32>)
+    return %0#0, %0#1, %0#2 : tensor<2x2xf64>, tensor<2xi32>, tensor<i32>
+  }
+}
+"#;
+    let a = f64_buf(&[4.0, 3.0, 6.0, 3.0]);
+    let out = run_mlir(mlir, &[&a], &[32, 8, 4]);
+    let lu = read_f64s(&out[0]);
+    let pivots: Vec<i32> = out[1]
+        .chunks_exact(4)
+        .map(|c| i32::from_le_bytes(c.try_into().unwrap()))
+        .collect();
+    let info: i32 = i32::from_le_bytes(out[2][..4].try_into().unwrap());
+    eprintln!("LU: {:?}", lu);
+    eprintln!("pivots: {:?}", pivots);
+    eprintln!("info: {}", info);
+    assert_eq!(info, 0);
+    // After pivot: row 0 <-> row 1 (pivot[0] = 2 in 1-indexed)
+    assert_eq!(pivots[0], 2);
+    // LU packed: [[6, 3], [2/3, 1]]
+    assert_f64_close(lu[0], 6.0);
+    assert_f64_close(lu[1], 3.0);
+    assert_f64_close(lu[2], 2.0 / 3.0);
+    assert_f64_close(lu[3], 1.0);
+}
+
+#[test]
+fn test_lapack_dtrsm_lower_unit() {
+    // L = [[1, 0], [2, 1]] (unit lower triangular), b = [[5], [8]]
+    // Solve L*x = b -> x = [[5], [-2]]
+    let mlir = r#"
+module @module {
+  func.func public @main(%arg0: tensor<2x2xf64>, %arg1: tensor<2x1xf64>) -> tensor<2x1xf64> {
+    %0 = stablehlo.custom_call @lapack_dtrsm_ffi(%arg0, %arg1) {backend_config = "", mhlo.backend_config = {diag = 85 : ui8, side = 76 : ui8, trans_x = 78 : ui8, uplo = 76 : ui8}} -> tensor<2x1xf64>
+    return %0 : tensor<2x1xf64>
+  }
+}
+"#;
+    let a = f64_buf(&[1.0, 0.0, 2.0, 1.0]);
+    let b = f64_buf(&[5.0, 8.0]);
+    let out = run_mlir(mlir, &[&a, &b], &[16]);
+    let result = read_f64s(&out[0]);
+    eprintln!("trsm result: {:?}", result);
+    assert_f64s_close(&result, &[5.0, -2.0]);
+}
+
+#[test]
+fn test_lapack_dtrsm_upper() {
+    // U = [[3, 1], [0, 2]] (upper triangular), b = [[5], [4]]
+    // Solve U*x = b -> x = [[1], [2]]
+    let mlir = r#"
+module @module {
+  func.func public @main(%arg0: tensor<2x2xf64>, %arg1: tensor<2x1xf64>) -> tensor<2x1xf64> {
+    %0 = stablehlo.custom_call @lapack_dtrsm_ffi(%arg0, %arg1) {backend_config = "", mhlo.backend_config = {diag = 78 : ui8, side = 76 : ui8, trans_x = 78 : ui8, uplo = 85 : ui8}} -> tensor<2x1xf64>
+    return %0 : tensor<2x1xf64>
+  }
+}
+"#;
+    let a = f64_buf(&[3.0, 1.0, 0.0, 2.0]);
+    let b = f64_buf(&[5.0, 4.0]);
+    let out = run_mlir(mlir, &[&a, &b], &[16]);
+    let result = read_f64s(&out[0]);
+    eprintln!("trsm result: {:?}", result);
+    assert_f64s_close(&result, &[1.0, 2.0]);
+}
+
+#[test]
+fn test_lapack_svd_2x2() {
+    // A = [[3, 0], [0, 2]]  -> SVD: U=I, S=[3,2], V=I
+    let mlir = r#"
+module @module {
+  func.func public @main(%arg0: tensor<2x2xf64>) -> (tensor<2x2xf64>, tensor<2xf64>, tensor<2x2xf64>, tensor<2x2xf64>, tensor<i32>) {
+    %0:5 = stablehlo.custom_call @lapack_dgesdd_ffi(%arg0) {backend_config = "", mhlo.backend_config = {mode = 65 : ui8}} -> (tensor<2x2xf64>, tensor<2xf64>, tensor<2x2xf64>, tensor<2x2xf64>, tensor<i32>)
+    return %0#0, %0#1, %0#2, %0#3, %0#4 : tensor<2x2xf64>, tensor<2xf64>, tensor<2x2xf64>, tensor<2x2xf64>, tensor<i32>
+  }
+}
+"#;
+    let a = f64_buf(&[3.0, 0.0, 0.0, 2.0]);
+    let out = run_mlir(mlir, &[&a], &[32, 16, 32, 32, 4]);
+    let u = read_f64s(&out[0]);
+    let s = read_f64s(&out[1]);
+    let vt = read_f64s(&out[2]);
+    eprintln!("U: {:?}", u);
+    eprintln!("S: {:?}", s);
+    eprintln!("VT: {:?}", vt);
+    // S should be [3, 2] (descending)
+    assert_f64_close(s[0], 3.0);
+    assert_f64_close(s[1], 2.0);
+    // U * diag(S) * VT should reconstruct A
+    let mut reconstructed = [0.0f64; 4];
+    for i in 0..2 {
+        for j in 0..2 {
+            for k in 0..2 {
+                reconstructed[i * 2 + j] += u[i * 2 + k] * s[k] * vt[k * 2 + j];
+            }
+        }
+    }
+    eprintln!("Reconstructed: {:?}", reconstructed);
+    assert_f64s_close(&reconstructed, &[3.0, 0.0, 0.0, 2.0]);
+}
+
+#[test]
+fn test_lapack_cholesky_3x3() {
+    // A = [[4, 2, 0], [2, 5, 3], [0, 3, 10]] -> L such that L*L^T = A
+    let mlir = r#"
+module @module {
+  func.func public @main(%arg0: tensor<3x3xf64>) -> (tensor<3x3xf64>, tensor<i32>) {
+    %0:2 = stablehlo.custom_call @lapack_dpotrf_ffi(%arg0) {backend_config = "", mhlo.backend_config = {uplo = 76 : ui8}} -> (tensor<3x3xf64>, tensor<i32>)
+    return %0#0, %0#1 : tensor<3x3xf64>, tensor<i32>
+  }
+}
+"#;
+    let a = f64_buf(&[4.0, 2.0, 0.0, 2.0, 5.0, 3.0, 0.0, 3.0, 10.0]);
+    let out = run_mlir(mlir, &[&a], &[72, 4]);
+    let l = read_f64s(&out[0]);
+    let info: i32 = i32::from_le_bytes(out[1][..4].try_into().unwrap());
+    eprintln!("L: {:?}", l);
+    eprintln!("info: {}", info);
+    assert_eq!(info, 0);
+    // L should be lower triangular
+    assert_f64_close(l[1], 0.0); // L[0,1]
+    assert_f64_close(l[2], 0.0); // L[0,2]
+    assert_f64_close(l[5], 0.0); // L[1,2]
+    // Verify L*L^T = A
+    let mut llt = [0.0f64; 9];
+    for i in 0..3 {
+        for j in 0..3 {
+            for k in 0..3 {
+                llt[i * 3 + j] += l[i * 3 + k] * l[j * 3 + k];
+            }
+        }
+    }
+    eprintln!("L*L^T: {:?}", llt);
+    assert_f64s_close(&llt, &[4.0, 2.0, 0.0, 2.0, 5.0, 3.0, 0.0, 3.0, 10.0]);
+}
+
+#[test]
+fn test_lapack_svd_3x3_nontrivial() {
+    // A = [[1, 2, 0], [0, 3, 1], [2, 0, 4]]
+    let mlir = r#"
+module @module {
+  func.func public @main(%arg0: tensor<3x3xf64>) -> (tensor<3x3xf64>, tensor<3xf64>, tensor<3x3xf64>, tensor<3x3xf64>, tensor<i32>) {
+    %0:5 = stablehlo.custom_call @lapack_dgesdd_ffi(%arg0) {backend_config = "", mhlo.backend_config = {mode = 65 : ui8}} -> (tensor<3x3xf64>, tensor<3xf64>, tensor<3x3xf64>, tensor<3x3xf64>, tensor<i32>)
+    return %0#0, %0#1, %0#2, %0#3, %0#4 : tensor<3x3xf64>, tensor<3xf64>, tensor<3x3xf64>, tensor<3x3xf64>, tensor<i32>
+  }
+}
+"#;
+    let a = f64_buf(&[1.0, 2.0, 0.0, 0.0, 3.0, 1.0, 2.0, 0.0, 4.0]);
+    let out = run_mlir(mlir, &[&a], &[72, 24, 72, 72, 4]);
+    let u = read_f64s(&out[0]);
+    let s = read_f64s(&out[1]);
+    let vt = read_f64s(&out[2]);
+    eprintln!("U: {:?}", u);
+    eprintln!("S: {:?}", s);
+    eprintln!("VT: {:?}", vt);
+    // Verify U * diag(S) * VT reconstructs A
+    let mut reconstructed = vec![0.0f64; 9];
+    for i in 0..3 {
+        for j in 0..3 {
+            for k in 0..3 {
+                reconstructed[i * 3 + j] += u[i * 3 + k] * s[k] * vt[k * 3 + j];
+            }
+        }
+    }
+    eprintln!("Reconstructed: {:?}", reconstructed);
+    let expected = [1.0, 2.0, 0.0, 0.0, 3.0, 1.0, 2.0, 0.0, 4.0];
+    for (i, (&a, &e)) in reconstructed.iter().zip(expected.iter()).enumerate() {
+        let diff = (a - e).abs();
+        assert!(
+            diff < 1e-10,
+            "element {i}: expected {e}, got {a} (abs_diff: {diff:.2e})"
+        );
+    }
+}
+
+#[test]
+fn test_lapack_syevd_2x2() {
+    // A = [[2, 1], [1, 3]] (symmetric) -> eigenvalues ~[1.382, 3.618]
+    let mlir = r#"
+module @module {
+  func.func public @main(%arg0: tensor<2x2xf64>) -> (tensor<2x2xf64>, tensor<2xf64>, tensor<i32>) {
+    %0:3 = stablehlo.custom_call @lapack_dsyevd_ffi(%arg0) {backend_config = "", mhlo.backend_config = {mode = 86 : ui8, uplo = 76 : ui8}} -> (tensor<2x2xf64>, tensor<2xf64>, tensor<i32>)
+    return %0#0, %0#1, %0#2 : tensor<2x2xf64>, tensor<2xf64>, tensor<i32>
+  }
+}
+"#;
+    let a = f64_buf(&[2.0, 1.0, 1.0, 3.0]);
+    let out = run_mlir(mlir, &[&a], &[32, 16, 4]);
+    let eigvecs = read_f64s(&out[0]);
+    let eigvals = read_f64s(&out[1]);
+    let info: i32 = i32::from_le_bytes(out[2][..4].try_into().unwrap());
+    eprintln!("eigvals: {:?}", eigvals);
+    eprintln!("eigvecs: {:?}", eigvecs);
+    eprintln!("info: {}", info);
+    assert_eq!(info, 0);
+    // Eigenvalues of [[2,1],[1,3]] are (5-sqrt(5))/2 and (5+sqrt(5))/2
+    let sqrt5 = 5.0f64.sqrt();
+    assert_f64_close(eigvals[0], (5.0 - sqrt5) / 2.0);
+    assert_f64_close(eigvals[1], (5.0 + sqrt5) / 2.0);
+    // Verify V * diag(lambda) * V^T = A
+    let mut reconstructed = [0.0f64; 4];
+    for i in 0..2 {
+        for j in 0..2 {
+            for k in 0..2 {
+                reconstructed[i * 2 + j] += eigvecs[i * 2 + k] * eigvals[k] * eigvecs[j * 2 + k];
+            }
+        }
+    }
+    eprintln!("Reconstructed: {:?}", reconstructed);
+    assert_f64s_close(&reconstructed, &[2.0, 1.0, 1.0, 3.0]);
+}
+
+#[test]
+fn test_lapack_qr_3x3() {
+    // A = [[1, 2, 3], [4, 5, 6], [7, 8, 10]]
+    let mlir = r#"
+module @module {
+  func.func public @main(%arg0: tensor<3x3xf64>) -> (tensor<3x3xf64>, tensor<3xf64>) {
+    %0:2 = stablehlo.custom_call @lapack_dgeqrf_ffi(%arg0) {backend_config = "", mhlo.backend_config = {}} -> (tensor<3x3xf64>, tensor<3xf64>)
+    return %0#0, %0#1 : tensor<3x3xf64>, tensor<3xf64>
+  }
+}
+"#;
+    let a = f64_buf(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 10.0]);
+    let out = run_mlir(mlir, &[&a], &[72, 24]);
+    let qr_packed = read_f64s(&out[0]);
+    let tau = read_f64s(&out[1]);
+    eprintln!("QR packed: {:?}", qr_packed);
+    eprintln!("tau: {:?}", tau);
+    // Just verify the packed form and tau are populated (non-zero)
+    assert!(tau[0].abs() > 1e-15, "tau[0] should be non-zero");
+}
+
+#[test]
+fn test_lapack_qr_orgqr_roundtrip_3x3() {
+    // Full QR roundtrip: A -> (QR, tau) -> (Q, R) -> Q*R should equal A
+    let mlir = r#"
+module @module {
+  func.func public @main(%arg0: tensor<3x3xf64>) -> tensor<3x3xf64> {
+    %0:2 = stablehlo.custom_call @lapack_dgeqrf_ffi(%arg0) {backend_config = "", mhlo.backend_config = {}} -> (tensor<3x3xf64>, tensor<3xf64>)
+    %1 = stablehlo.custom_call @lapack_dorgqr_ffi(%0#0, %0#1) {backend_config = "", mhlo.backend_config = {}} -> tensor<3x3xf64>
+    return %1 : tensor<3x3xf64>
+  }
+}
+"#;
+    let a = f64_buf(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 10.0]);
+    let out = run_mlir(mlir, &[&a], &[72]);
+    let q = read_f64s(&out[0]);
+    eprintln!("Q: {:?}", q);
+    // Q should be orthogonal: Q^T * Q = I
+    let mut qtq = vec![0.0f64; 9];
+    for i in 0..3 {
+        for j in 0..3 {
+            for k in 0..3 {
+                qtq[i * 3 + j] += q[k * 3 + i] * q[k * 3 + j];
+            }
+        }
+    }
+    eprintln!("Q^T*Q: {:?}", qtq);
+    let identity = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+    for (i, (&a, &e)) in qtq.iter().zip(identity.iter()).enumerate() {
+        let diff = (a - e).abs();
+        assert!(
+            diff < 1e-10,
+            "Q^T*Q[{}]: expected {e}, got {a} (abs_diff: {diff:.2e})",
+            i
+        );
+    }
+}
+
+#[test]
+fn test_solve_3x3_vector_rhs() {
+    // Direct test: solve A*x = b where A = [[1.01, 0.00833, 0], [0, 1.01, 0.00833], [0, 0, 1.01]]
+    // b = [1, 3, 5] -> x ~= [0.966, 2.929, 4.950]
+    // Use the exact MLIR pattern from the linalg-iree solve path
+    let mlir = r#"
+module @module {
+  func.func public @main(%arg0: tensor<3x3xf64>, %arg1: tensor<3xf64>) -> tensor<3xf64> {
+    %0:3 = stablehlo.custom_call @lapack_dgetrf_ffi(%arg0) {backend_config = "", mhlo.backend_config = {}} -> (tensor<3x3xf64>, tensor<3xi32>, tensor<i32>)
+    %c = stablehlo.constant dense<1> : tensor<i32>
+    %1 = stablehlo.broadcast_in_dim %c, dims = [] : (tensor<i32>) -> tensor<3xi32>
+    %2 = stablehlo.subtract %0#1, %1 : tensor<3xi32>
+    %c_0 = stablehlo.constant dense<0> : tensor<i32>
+    %3 = stablehlo.broadcast_in_dim %c_0, dims = [] : (tensor<i32>) -> tensor<i32>
+    %4 = stablehlo.compare GE, %0#2, %3, SIGNED : (tensor<i32>, tensor<i32>) -> tensor<i1>
+    %5 = stablehlo.broadcast_in_dim %4, dims = [] : (tensor<i1>) -> tensor<1x1xi1>
+    %cst = stablehlo.constant dense<0x7FF8000000000000> : tensor<f64>
+    %6 = stablehlo.broadcast_in_dim %cst, dims = [] : (tensor<f64>) -> tensor<3x3xf64>
+    %7 = stablehlo.broadcast_in_dim %5, dims = [0, 1] : (tensor<1x1xi1>) -> tensor<3x3xi1>
+    %8 = stablehlo.select %7, %0#0, %6 : tensor<3x3xi1>, tensor<3x3xf64>
+    %9 = stablehlo.iota dim = 0 : tensor<3xi32>
+    %c_1 = stablehlo.constant dense<0> : tensor<i64>
+    %c_2 = stablehlo.constant dense<0> : tensor<i64>
+    %10:4 = stablehlo.while(%iterArg = %2, %iterArg_3 = %c_2, %iterArg_4 = %c_1, %iterArg_5 = %9) : tensor<3xi32>, tensor<i64>, tensor<i64>, tensor<3xi32>
+    cond {
+      %c_6 = stablehlo.constant dense<3> : tensor<i64>
+      %14 = stablehlo.compare LT, %iterArg_3, %c_6, SIGNED : (tensor<i64>, tensor<i64>) -> tensor<i1>
+      stablehlo.return %14 : tensor<i1>
+    } do {
+      %14:2 = func.call @closed_call(%iterArg, %iterArg_4, %iterArg_5) : (tensor<3xi32>, tensor<i64>, tensor<3xi32>) -> (tensor<i64>, tensor<3xi32>)
+      %c_6 = stablehlo.constant dense<1> : tensor<i64>
+      %15 = stablehlo.add %iterArg_3, %c_6 : tensor<i64>
+      stablehlo.return %iterArg, %15, %14#0, %14#1 : tensor<3xi32>, tensor<i64>, tensor<i64>, tensor<3xi32>
+    }
+    %11 = call @_lu_solve(%8, %10#3, %arg1) : (tensor<3x3xf64>, tensor<3xi32>, tensor<3xf64>) -> tensor<3xf64>
+    return %11 : tensor<3xf64>
+  }
+  func.func private @closed_call(%arg0: tensor<3xi32>, %arg1: tensor<i64>, %arg2: tensor<3xi32>) -> (tensor<i64>, tensor<3xi32>) {
+    %c = stablehlo.constant dense<1> : tensor<i64>
+    %0 = stablehlo.add %arg1, %c : tensor<i64>
+    %c_0 = stablehlo.constant dense<0> : tensor<i64>
+    %1 = stablehlo.compare LT, %arg1, %c_0, SIGNED : (tensor<i64>, tensor<i64>) -> tensor<i1>
+    %2 = stablehlo.convert %arg1 : tensor<i64>
+    %c_1 = stablehlo.constant dense<3> : tensor<i64>
+    %3 = stablehlo.add %2, %c_1 : tensor<i64>
+    %4 = stablehlo.select %1, %3, %arg1 : tensor<i1>, tensor<i64>
+    %5 = stablehlo.dynamic_slice %arg0, %4, sizes = [1] : (tensor<3xi32>, tensor<i64>) -> tensor<1xi32>
+    %6 = stablehlo.reshape %5 : (tensor<1xi32>) -> tensor<i32>
+    %c_2 = stablehlo.constant dense<0> : tensor<i64>
+    %7 = stablehlo.compare LT, %arg1, %c_2, SIGNED : (tensor<i64>, tensor<i64>) -> tensor<i1>
+    %8 = stablehlo.convert %arg1 : tensor<i64>
+    %c_3 = stablehlo.constant dense<3> : tensor<i64>
+    %9 = stablehlo.add %8, %c_3 : tensor<i64>
+    %10 = stablehlo.select %7, %9, %arg1 : tensor<i1>, tensor<i64>
+    %11 = stablehlo.dynamic_slice %arg2, %10, sizes = [1] : (tensor<3xi32>, tensor<i64>) -> tensor<1xi32>
+    %12 = stablehlo.reshape %11 : (tensor<1xi32>) -> tensor<i32>
+    %c_4 = stablehlo.constant dense<0> : tensor<i32>
+    %13 = stablehlo.compare LT, %6, %c_4, SIGNED : (tensor<i32>, tensor<i32>) -> tensor<i1>
+    %c_5 = stablehlo.constant dense<3> : tensor<i32>
+    %14 = stablehlo.add %6, %c_5 : tensor<i32>
+    %15 = stablehlo.select %13, %14, %6 : tensor<i1>, tensor<i32>
+    %16 = stablehlo.dynamic_slice %arg2, %15, sizes = [1] : (tensor<3xi32>, tensor<i32>) -> tensor<1xi32>
+    %17 = stablehlo.reshape %16 : (tensor<1xi32>) -> tensor<i32>
+    %c_6 = stablehlo.constant dense<0> : tensor<i64>
+    %18 = stablehlo.compare LT, %arg1, %c_6, SIGNED : (tensor<i64>, tensor<i64>) -> tensor<i1>
+    %c_7 = stablehlo.constant dense<3> : tensor<i64>
+    %19 = stablehlo.add %arg1, %c_7 : tensor<i64>
+    %20 = stablehlo.select %18, %19, %arg1 : tensor<i1>, tensor<i64>
+    %21 = stablehlo.convert %20 : (tensor<i64>) -> tensor<i32>
+    %22 = stablehlo.broadcast_in_dim %21, dims = [] : (tensor<i32>) -> tensor<1xi32>
+    %23 = "stablehlo.scatter"(%arg2, %22, %17) <{indices_are_sorted = true, scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0], scatter_dims_to_operand_dims = [0]>, unique_indices = true}> ({
+    ^bb0(%arg3: tensor<i32>, %arg4: tensor<i32>):
+      stablehlo.return %arg4 : tensor<i32>
+    }) : (tensor<3xi32>, tensor<1xi32>, tensor<i32>) -> tensor<3xi32>
+    %c_8 = stablehlo.constant dense<0> : tensor<i32>
+    %24 = stablehlo.compare LT, %6, %c_8, SIGNED : (tensor<i32>, tensor<i32>) -> tensor<i1>
+    %c_9 = stablehlo.constant dense<3> : tensor<i32>
+    %25 = stablehlo.add %6, %c_9 : tensor<i32>
+    %26 = stablehlo.select %24, %25, %6 : tensor<i1>, tensor<i32>
+    %27 = stablehlo.broadcast_in_dim %26, dims = [] : (tensor<i32>) -> tensor<1xi32>
+    %28 = "stablehlo.scatter"(%23, %27, %12) <{indices_are_sorted = true, scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0], scatter_dims_to_operand_dims = [0]>, unique_indices = true}> ({
+    ^bb0(%arg3: tensor<i32>, %arg4: tensor<i32>):
+      stablehlo.return %arg4 : tensor<i32>
+    }) : (tensor<3xi32>, tensor<1xi32>, tensor<i32>) -> tensor<3xi32>
+    return %0, %28 : tensor<i64>, tensor<3xi32>
+  }
+  func.func private @_lu_solve(%arg0: tensor<3x3xf64>, %arg1: tensor<3xi32>, %arg2: tensor<3xf64>) -> tensor<3xf64> {
+    %0 = stablehlo.broadcast_in_dim %arg2, dims = [0] : (tensor<3xf64>) -> tensor<3x1xf64>
+    %c = stablehlo.constant dense<0> : tensor<i32>
+    %1 = stablehlo.broadcast_in_dim %c, dims = [] : (tensor<i32>) -> tensor<3xi32>
+    %2 = stablehlo.compare LT, %arg1, %1, SIGNED : (tensor<3xi32>, tensor<3xi32>) -> tensor<3xi1>
+    %c_0 = stablehlo.constant dense<3> : tensor<i32>
+    %3 = stablehlo.broadcast_in_dim %c_0, dims = [] : (tensor<i32>) -> tensor<3xi32>
+    %4 = stablehlo.add %arg1, %3 : tensor<3xi32>
+    %5 = stablehlo.select %2, %4, %arg1 : tensor<3xi1>, tensor<3xi32>
+    %6 = stablehlo.broadcast_in_dim %5, dims = [0] : (tensor<3xi32>) -> tensor<3x1xi32>
+    %7 = "stablehlo.gather"(%0, %6) <{dimension_numbers = #stablehlo.gather<offset_dims = [1], collapsed_slice_dims = [0], start_index_map = [0], index_vector_dim = 1>, indices_are_sorted = false, slice_sizes = array<i64: 1, 1>}> : (tensor<3x1xf64>, tensor<3x1xi32>) -> tensor<3x1xf64>
+    %8 = stablehlo.custom_call @lapack_dtrsm_ffi(%arg0, %7) {backend_config = "", mhlo.backend_config = {diag = 85 : ui8, side = 76 : ui8, trans_x = 78 : ui8, uplo = 76 : ui8}} -> tensor<3x1xf64>
+    %9 = stablehlo.custom_call @lapack_dtrsm_ffi(%arg0, %8) {backend_config = "", mhlo.backend_config = {diag = 78 : ui8, side = 76 : ui8, trans_x = 78 : ui8, uplo = 85 : ui8}} -> tensor<3x1xf64>
+    %10 = stablehlo.slice %9 [0:3, 0:1] : (tensor<3x1xf64>) -> tensor<3x1xf64>
+    %11 = stablehlo.reshape %10 : (tensor<3x1xf64>) -> tensor<3xf64>
+    return %11 : tensor<3xf64>
+  }
+}
+"#;
+    let a = f64_buf(&[
+        1.01,
+        1.0 / 120.0,
+        0.0,
+        0.0,
+        1.01,
+        1.0 / 120.0,
+        0.0,
+        0.0,
+        1.01,
+    ]);
+    let b = f64_buf(&[1.0, 3.0, 5.0]);
+    let out = run_mlir(mlir, &[&a, &b], &[24]);
+    let result = read_f64s(&out[0]);
+    eprintln!("solve result: {:?}", result);
+    // Expected: [0.966, 2.929, 4.950] approximately
+    assert_f64_close(result[2], 5.0 / 1.01);
+}
+
+#[test]
+#[ignore = "known issue: 3D gather/broadcast path produces wrong results for matrix-RHS solve"]
+fn test_linalg_iree_one_tick() {
+    let mlir = include_str!("../testdata/linalg-iree.stablehlo.mlir");
+    let module = cranelift_mlir::parser::parse_module(mlir).expect("parse failed");
+    let compiled = cranelift_mlir::lower::compile_module(&module).expect("compile failed");
+    let fn_ptr = compiled.get_main_fn();
+    let tick_fn: TickFn = unsafe { std::mem::transmute(fn_ptr) };
+
+    // Inputs match the world() spawn in sim.py:
+    // arg0: tick (i64) = 0
+    let arg0 = i64_buf(&[0]);
+    // arg1: mrhs_state (3x2 f64) = [[1,2],[3,4],[5,6]]
+    let arg1 = f64_buf(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+    // arg2: sm2_state (2 f64) = [1.0, 0.5]
+    let arg2 = f64_buf(&[1.0, 0.5]);
+    // arg3: sm2_cov (2x2 f64) = eye(2)*5 = [[5,0],[0,5]]
+    let arg3 = f64_buf(&[5.0, 0.0, 0.0, 5.0]);
+    // arg4: kf3_state (3 f64) = [0, 1, 0]
+    let arg4 = f64_buf(&[0.0, 1.0, 0.0]);
+    // arg5: kf3_cov (3x3 f64) = eye(3)*10
+    let arg5 = f64_buf(&[10.0, 0.0, 0.0, 0.0, 10.0, 0.0, 0.0, 0.0, 10.0]);
+    // arg6: kf3_info (5 f64) = zeros
+    let arg6 = f64_buf(&[0.0, 0.0, 0.0, 0.0, 0.0]);
+    // arg7: ekf6_state (6 f64) = [0,0,100,10,0,-5]
+    let arg7 = f64_buf(&[0.0, 0.0, 100.0, 10.0, 0.0, -5.0]);
+    // arg8: ekf6_cov (6x6 f64) = eye(6)*100
+    let mut arg8_data = vec![0.0f64; 36];
+    for i in 0..6 {
+        arg8_data[i * 6 + i] = 100.0;
+    }
+    let arg8 = f64_buf(&arg8_data);
+    // arg9: ekf6_info (4 f64) = zeros
+    let arg9 = f64_buf(&[0.0, 0.0, 0.0, 0.0]);
+    // arg10: mode_state (4 i64) = [0,0,0,0]
+    let arg10 = i64_buf(&[0, 0, 0, 0]);
+
+    let inputs: Vec<&[u8]> = vec![
+        &arg0, &arg1, &arg2, &arg3, &arg4, &arg5, &arg6, &arg7, &arg8, &arg9, &arg10,
+    ];
+    // Outputs (from return type):
+    // result[0]: 4xf64 (ekf6_info)
+    // result[1]: 3x3xf64 (kf3_cov)
+    // result[2]: 2xf64 (sm2_state)
+    // result[3]: 3x2xf64 (mrhs_state)
+    // result[4]: i64 (tick)
+    // result[5]: 2x2xf64 (sm2_cov)
+    // result[6]: 4xi64 (mode_state)
+    // result[7]: 3xf64 (kf3_state)
+    // result[8]: 6xf64 (ekf6_state)
+    // result[9]: 5xf64 (kf3_info)
+    // result[10]: 6x6xf64 (ekf6_cov)
+    let output_sizes = vec![32, 72, 16, 48, 8, 32, 32, 24, 48, 40, 288];
+    let out = run_mlir(mlir, &inputs, &output_sizes);
+
+    // Check result[3]: mrhs_state after one tick
+    let mrhs = read_f64s(&out[3]);
+    eprintln!("mrhs_state: {:?}", mrhs);
+    // Expected: solve(F3 + 0.01*I, [[1,2],[3,4],[5,6]])
+    // F3 + 0.01*I is upper triangular with diag ~1.01
+    assert_f64_close(mrhs[0], 0.9659286191338475);
+    assert_f64_close(mrhs[4], 4.9504950495049505);
+}
+
 // ---- Arithmetic ops ----
 
 #[test]

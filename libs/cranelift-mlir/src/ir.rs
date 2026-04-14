@@ -388,6 +388,7 @@ pub enum Instruction {
     CustomCall {
         call_target: String,
         operands: Vec<ValueId>,
+        backend_config: HashMap<String, i64>,
     },
 }
 

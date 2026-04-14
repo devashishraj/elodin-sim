@@ -847,7 +847,13 @@ pub fn compile_module_with_config(
     jit_builder.symbol("tanh", libc_tanh as *const u8);
     jit_builder.symbol("tan", libc_tan as *const u8);
     jit_builder.symbol("erf_inv_impl", erf_inv_scalar as *const u8);
-    jit_builder.symbol("__cranelift_svd_3x3", svd_3x3 as *const u8);
+    jit_builder.symbol("__cranelift_svd", cranelift_svd as *const u8);
+    jit_builder.symbol("__cranelift_lu", cranelift_lu as *const u8);
+    jit_builder.symbol("__cranelift_trsm", cranelift_trsm as *const u8);
+    jit_builder.symbol("__cranelift_cholesky", cranelift_cholesky as *const u8);
+    jit_builder.symbol("__cranelift_qr", cranelift_qr as *const u8);
+    jit_builder.symbol("__cranelift_orgqr", cranelift_orgqr as *const u8);
+    jit_builder.symbol("__cranelift_syevd", cranelift_syevd as *const u8);
     register_tensor_rt_symbols(&mut jit_builder);
 
     let mut jit_module = JITModule::new(jit_builder);
@@ -2542,6 +2548,7 @@ fn lower_instruction_mem(
         Instruction::CustomCall {
             call_target,
             operands,
+            ..
         } => Err(format!("mem: custom_call not yet supported: {call_target}")),
 
         Instruction::Return { .. } => Ok(vec![]),
@@ -3491,6 +3498,7 @@ fn lower_instruction(
         Instruction::CustomCall {
             call_target,
             operands,
+            backend_config,
         } => lower_custom_call(
             builder,
             call_target,
@@ -3500,6 +3508,7 @@ fn lower_instruction(
             type_map,
             jit_module,
             libm_ids,
+            backend_config,
         ),
 
         Instruction::Return { .. } => Ok(vec![]),
@@ -4732,6 +4741,7 @@ fn lower_custom_call(
     type_map: &HashMap<ValueId, TensorType>,
     jit_module: &mut JITModule,
     libm_ids: &LibmIds,
+    backend_config: &HashMap<String, i64>,
 ) -> Result<Vec<TensorVals>, String> {
     if call_target.starts_with("lapack_dgesdd") {
         return lower_svd_custom_call(
@@ -4743,110 +4753,464 @@ fn lower_custom_call(
             jit_module,
         );
     }
+    if call_target.starts_with("lapack_dgetrf") {
+        return lower_lu_custom_call(
+            builder,
+            operands,
+            result_types,
+            value_map,
+            type_map,
+            jit_module,
+        );
+    }
+    if call_target.starts_with("lapack_dtrsm") {
+        return lower_trsm_custom_call(
+            builder,
+            operands,
+            result_types,
+            value_map,
+            type_map,
+            jit_module,
+            backend_config,
+        );
+    }
+    if call_target.starts_with("lapack_dpotrf") {
+        return lower_cholesky_custom_call(
+            builder,
+            operands,
+            result_types,
+            value_map,
+            type_map,
+            jit_module,
+        );
+    }
+    if call_target.starts_with("lapack_dgeqrf") {
+        return lower_qr_custom_call(
+            builder,
+            operands,
+            result_types,
+            value_map,
+            type_map,
+            jit_module,
+        );
+    }
+    if call_target.starts_with("lapack_dorgqr") {
+        return lower_orgqr_custom_call(
+            builder,
+            operands,
+            result_types,
+            value_map,
+            type_map,
+            jit_module,
+        );
+    }
+    if call_target.starts_with("lapack_dsyevd") {
+        return lower_syevd_custom_call(
+            builder,
+            operands,
+            result_types,
+            value_map,
+            type_map,
+            jit_module,
+        );
+    }
     Err(format!("unsupported custom_call target: {call_target}"))
 }
 
-extern "C" fn svd_3x3(a: *const f64, u: *mut f64, s: *mut f64, vt: *mut f64, info: *mut i32) {
-    let a = unsafe { std::slice::from_raw_parts(a, 9) };
-    let u_out = unsafe { std::slice::from_raw_parts_mut(u, 9) };
-    let s_out = unsafe { std::slice::from_raw_parts_mut(s, 3) };
-    let vt_out = unsafe { std::slice::from_raw_parts_mut(vt, 9) };
+// ---------------------------------------------------------------------------
+// Host LAPACK functions backed by faer
+// ---------------------------------------------------------------------------
 
-    let m = 3;
-    let mut mat = [0.0f64; 9];
+fn row_major_to_col_major(row: &[f64], m: usize, n: usize) -> Vec<f64> {
+    let mut col = vec![0.0; m * n];
+    for i in 0..m {
+        for j in 0..n {
+            col[j * m + i] = row[i * n + j];
+        }
+    }
+    col
+}
+
+fn col_major_to_row_major(col: &[f64], m: usize, n: usize) -> Vec<f64> {
+    let mut row = vec![0.0; m * n];
+    for i in 0..m {
+        for j in 0..n {
+            row[i * n + j] = col[j * m + i];
+        }
+    }
+    row
+}
+
+extern "C" fn cranelift_svd(
+    a_ptr: *const f64,
+    n: usize,
+    u_ptr: *mut f64,
+    s_ptr: *mut f64,
+    vt_ptr: *mut f64,
+    info_ptr: *mut i32,
+) {
+    use faer::prelude::*;
+    let a = unsafe { std::slice::from_raw_parts(a_ptr, n * n) };
+    let u_out = unsafe { std::slice::from_raw_parts_mut(u_ptr, n * n) };
+    let s_out = unsafe { std::slice::from_raw_parts_mut(s_ptr, n) };
+    let vt_out = unsafe { std::slice::from_raw_parts_mut(vt_ptr, n * n) };
+
+    // Input is row-major from the IR; faer needs column-major
+    let col_data = row_major_to_col_major(a, n, n);
+    let mat = faer::mat::from_column_major_slice(&col_data, n, n);
+    let svd = mat.thin_svd();
+
+    // U output: convert from faer column-major back to row-major for the IR
+    let u_col = svd.u();
+    for i in 0..n {
+        for j in 0..n {
+            u_out[i * n + j] = u_col.read(i, j);
+        }
+    }
+    let s_diag = svd.s_diagonal();
+    for (i, val) in s_out.iter_mut().enumerate() {
+        *val = s_diag.read(i);
+    }
+    // VT output: row i of VT = column i of V transposed
+    let v = svd.v();
+    for i in 0..n {
+        for j in 0..n {
+            vt_out[i * n + j] = v.read(j, i);
+        }
+    }
+
+    unsafe { *info_ptr = 0 };
+}
+
+extern "C" fn cranelift_lu(
+    a_ptr: *const f64,
+    m: usize,
+    n: usize,
+    lu_ptr: *mut f64,
+    ipiv_ptr: *mut i32,
+    info_ptr: *mut i32,
+) {
+    let a = unsafe { std::slice::from_raw_parts(a_ptr, m * n) };
+    let lu_out = unsafe { std::slice::from_raw_parts_mut(lu_ptr, m * n) };
+    let ipiv_out = unsafe { std::slice::from_raw_parts_mut(ipiv_ptr, m.min(n)) };
+
+    let min_mn = m.min(n);
+
+    // Manual LU with partial pivoting producing LAPACK-compatible ipiv (1-indexed)
+    let mut mat = vec![0.0f64; m * n];
     mat.copy_from_slice(a);
+    let idx = |r: usize, c: usize| r * n + c;
 
-    // Jacobi SVD for small matrices
-    let mut u_mat = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
-    let mut v_mat = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
-
-    let idx = |r: usize, c: usize| r * m + c;
-
-    for _ in 0..100 {
-        let mut converged = true;
-        for p in 0..m {
-            for q in (p + 1)..m {
-                let mut alpha = 0.0;
-                let mut beta = 0.0;
-                let mut gamma = 0.0;
-                for k in 0..m {
-                    alpha += mat[idx(k, p)] * mat[idx(k, p)];
-                    beta += mat[idx(k, q)] * mat[idx(k, q)];
-                    gamma += mat[idx(k, p)] * mat[idx(k, q)];
-                }
-                if gamma.abs() < 1e-15 * (alpha * beta).sqrt().max(1e-300) {
-                    continue;
-                }
-                converged = false;
-                let zeta = (beta - alpha) / (2.0 * gamma);
-                let t = zeta.signum() / (zeta.abs() + (1.0 + zeta * zeta).sqrt());
-                let c = 1.0 / (1.0 + t * t).sqrt();
-                let s = t * c;
-
-                for k in 0..m {
-                    let akp = mat[idx(k, p)];
-                    let akq = mat[idx(k, q)];
-                    mat[idx(k, p)] = c * akp - s * akq;
-                    mat[idx(k, q)] = s * akp + c * akq;
-                }
-                for k in 0..m {
-                    let vkp = v_mat[idx(k, p)];
-                    let vkq = v_mat[idx(k, q)];
-                    v_mat[idx(k, p)] = c * vkp - s * vkq;
-                    v_mat[idx(k, q)] = s * vkp + c * vkq;
-                }
+    for k in 0..min_mn {
+        // Find pivot
+        let mut max_val = mat[idx(k, k)].abs();
+        let mut max_row = k;
+        for i in (k + 1)..m {
+            let v = mat[idx(i, k)].abs();
+            if v > max_val {
+                max_val = v;
+                max_row = i;
             }
         }
-        if converged {
-            break;
+        // LAPACK 1-indexed pivot
+        ipiv_out[k] = max_row as i32 + 1;
+
+        // Swap rows k and max_row
+        if max_row != k {
+            for j in 0..n {
+                mat.swap(idx(k, j), idx(max_row, j));
+            }
+        }
+
+        let pivot = mat[idx(k, k)];
+        if pivot.abs() < 1e-300 {
+            continue;
+        }
+
+        for i in (k + 1)..m {
+            mat[idx(i, k)] /= pivot;
+            let factor = mat[idx(i, k)];
+            for j in (k + 1)..n {
+                mat[idx(i, j)] -= factor * mat[idx(k, j)];
+            }
         }
     }
 
-    for j in 0..m {
-        let mut norm = 0.0;
-        for i in 0..m {
-            norm += mat[idx(i, j)] * mat[idx(i, j)];
-        }
-        let norm = norm.sqrt();
-        s_out[j] = norm;
-        if norm > 1e-300 {
-            for i in 0..m {
-                u_mat[idx(i, j)] = mat[idx(i, j)] / norm;
-            }
+    lu_out.copy_from_slice(&mat);
+    unsafe { *info_ptr = 0 };
+}
+
+extern "C" fn cranelift_trsm(
+    a_ptr: *const f64,
+    b_ptr: *const f64,
+    m: usize,
+    n: usize,
+    nrhs: usize,
+    uplo: u8,
+    diag: u8,
+    out_ptr: *mut f64,
+) {
+    let a = unsafe { std::slice::from_raw_parts(a_ptr, m * n) };
+    let b = unsafe { std::slice::from_raw_parts(b_ptr, m * nrhs) };
+    let out = unsafe { std::slice::from_raw_parts_mut(out_ptr, m * nrhs) };
+
+    let a_col = row_major_to_col_major(a, m, n);
+    let a_mat = faer::mat::from_column_major_slice(&a_col, m, n);
+
+    let mut x_col = row_major_to_col_major(b, m, nrhs);
+    let x_mat = faer::mat::from_column_major_slice_mut(&mut x_col, m, nrhs);
+
+    let is_lower = uplo == b'L';
+    let is_unit = diag == b'U';
+
+    if is_lower {
+        if is_unit {
+            faer::linalg::triangular_solve::solve_unit_lower_triangular_in_place(
+                a_mat,
+                x_mat,
+                faer::Parallelism::None,
+            );
         } else {
-            for i in 0..m {
-                u_mat[idx(i, j)] = if i == j { 1.0 } else { 0.0 };
-            }
+            faer::linalg::triangular_solve::solve_lower_triangular_in_place(
+                a_mat,
+                x_mat,
+                faer::Parallelism::None,
+            );
+        }
+    } else if is_unit {
+        faer::linalg::triangular_solve::solve_unit_upper_triangular_in_place(
+            a_mat,
+            x_mat,
+            faer::Parallelism::None,
+        );
+    } else {
+        faer::linalg::triangular_solve::solve_upper_triangular_in_place(
+            a_mat,
+            x_mat,
+            faer::Parallelism::None,
+        );
+    }
+
+    let result = col_major_to_row_major(&x_col, m, nrhs);
+    out.copy_from_slice(&result);
+}
+
+extern "C" fn cranelift_cholesky(a_ptr: *const f64, n: usize, l_ptr: *mut f64, info_ptr: *mut i32) {
+    let a = unsafe { std::slice::from_raw_parts(a_ptr, n * n) };
+    let l_out = unsafe { std::slice::from_raw_parts_mut(l_ptr, n * n) };
+
+    let mut col_data = row_major_to_col_major(a, n, n);
+    let mat = faer::mat::from_column_major_slice_mut(&mut col_data, n, n);
+
+    let req = faer::linalg::cholesky::llt::compute::cholesky_in_place_req::<f64>(
+        n,
+        faer::Parallelism::None,
+        Default::default(),
+    )
+    .unwrap();
+    let mut work = vec![0u8; req.unaligned_bytes_required()];
+    let stack = faer::dyn_stack::PodStack::new(&mut work);
+
+    let result = faer::linalg::cholesky::llt::compute::cholesky_in_place(
+        mat,
+        Default::default(),
+        faer::Parallelism::None,
+        stack,
+        Default::default(),
+    );
+
+    // Zero the strict upper triangle in column-major: elements where row < col
+    for col in 0..n {
+        for row in 0..col {
+            col_data[col * n + row] = 0.0;
         }
     }
 
-    // Sort singular values in descending order
+    let row_data = col_major_to_row_major(&col_data, n, n);
+    l_out.copy_from_slice(&row_data);
+
+    unsafe { *info_ptr = if result.is_ok() { 0 } else { 1 } };
+}
+
+extern "C" fn cranelift_qr(
+    a_ptr: *const f64,
+    m: usize,
+    n: usize,
+    qr_ptr: *mut f64,
+    tau_ptr: *mut f64,
+) {
+    let a = unsafe { std::slice::from_raw_parts(a_ptr, m * n) };
+    let qr_out = unsafe { std::slice::from_raw_parts_mut(qr_ptr, m * n) };
+    let tau_out = unsafe { std::slice::from_raw_parts_mut(tau_ptr, m.min(n)) };
+
+    let mut col_data = row_major_to_col_major(a, m, n);
+    let mut factors = faer::mat::from_column_major_slice_mut(&mut col_data, m, n);
+
+    let min_mn = m.min(n);
+    let blocksize = faer::linalg::qr::no_pivoting::compute::recommended_blocksize::<f64>(m, n);
+    let mut h_data = vec![0.0f64; blocksize * min_mn];
+    let mut householder = faer::mat::from_column_major_slice_mut(&mut h_data, blocksize, min_mn);
+
+    let params = Default::default();
+    let parallelism = faer::Parallelism::None;
+    let req = faer::linalg::qr::no_pivoting::compute::qr_in_place_req::<f64>(
+        m,
+        n,
+        blocksize,
+        parallelism,
+        params,
+    )
+    .unwrap();
+    let mut work = vec![0u8; req.unaligned_bytes_required()];
+    let stack = faer::dyn_stack::PodStack::new(&mut work);
+
+    faer::linalg::qr::no_pivoting::compute::qr_in_place(
+        factors.as_mut(),
+        householder.as_mut(),
+        parallelism,
+        stack,
+        params,
+    );
+
+    let row_data = col_major_to_row_major(&col_data, m, n);
+    qr_out.copy_from_slice(&row_data);
+
+    // Store first row of householder block as tau (the reflector coefficients)
+    for i in 0..min_mn {
+        tau_out[i] = h_data[i * blocksize];
+    }
+}
+
+extern "C" fn cranelift_orgqr(
+    qr_ptr: *const f64,
+    tau_ptr: *const f64,
+    m: usize,
+    n: usize,
+    q_ptr: *mut f64,
+) {
+    let qr_data = unsafe { std::slice::from_raw_parts(qr_ptr, m * n) };
+    let tau = unsafe { std::slice::from_raw_parts(tau_ptr, m.min(n)) };
+    let q_out = unsafe { std::slice::from_raw_parts_mut(q_ptr, m * n) };
+
+    let min_mn = m.min(n);
+    let blocksize = faer::linalg::qr::no_pivoting::compute::recommended_blocksize::<f64>(m, n);
+
+    // Rebuild the full block householder factor matrix from the scalar tau values
+    // The first row of each block column contains the tau value
+    let mut h_data = vec![0.0f64; blocksize * min_mn];
+    for i in 0..min_mn {
+        h_data[i * blocksize] = tau[i];
+    }
+    let householder = faer::mat::from_column_major_slice(&h_data, blocksize, min_mn);
+
+    let qr_col = row_major_to_col_major(qr_data, m, n);
+    let factors = faer::mat::from_column_major_slice(&qr_col, m, n);
+
+    let mut q = faer::Mat::<f64>::zeros(m, m);
+    q.as_mut().diagonal_mut().column_vector_mut().fill(1.0);
+
+    let req = faer::linalg::householder::apply_block_householder_sequence_on_the_left_in_place_req::<f64>(
+        m, blocksize, m,
+    ).unwrap();
+    let mut work = vec![0u8; req.unaligned_bytes_required()];
+    let stack = faer::dyn_stack::PodStack::new(&mut work);
+
+    faer::linalg::householder::apply_block_householder_sequence_on_the_left_in_place_with_conj(
+        factors,
+        householder,
+        faer::Conj::No,
+        q.as_mut(),
+        faer::Parallelism::None,
+        stack,
+    );
+
     for i in 0..m {
-        let mut max_idx = i;
-        for j in (i + 1)..m {
-            if s_out[j] > s_out[max_idx] {
-                max_idx = j;
-            }
-        }
-        if max_idx != i {
-            s_out.swap(i, max_idx);
-            for k in 0..m {
-                u_mat.swap(idx(k, i), idx(k, max_idx));
-                v_mat.swap(idx(k, i), idx(k, max_idx));
-            }
+        for j in 0..n {
+            q_out[i * n + j] = q.read(i, j);
         }
     }
+}
 
-    // Output: U is column-major in StableHLO (row-major in our flat layout)
-    u_out.copy_from_slice(&u_mat);
-    // V^T: transpose of V
-    for i in 0..m {
-        for j in 0..m {
-            vt_out[idx(i, j)] = v_mat[idx(j, i)];
+extern "C" fn cranelift_syevd(
+    a_ptr: *const f64,
+    n: usize,
+    eigvecs_ptr: *mut f64,
+    eigvals_ptr: *mut f64,
+    info_ptr: *mut i32,
+) {
+    let a = unsafe { std::slice::from_raw_parts(a_ptr, n * n) };
+    let eigvecs_out = unsafe { std::slice::from_raw_parts_mut(eigvecs_ptr, n * n) };
+    let eigvals_out = unsafe { std::slice::from_raw_parts_mut(eigvals_ptr, n) };
+
+    let col_data = row_major_to_col_major(a, n, n);
+    let mat = faer::mat::from_column_major_slice(&col_data, n, n);
+    let eigen = faer::linalg::solvers::SelfAdjointEigendecomposition::new(mat, faer::Side::Lower);
+
+    let u = eigen.u();
+    for i in 0..n {
+        for j in 0..n {
+            eigvecs_out[i * n + j] = u.read(i, j);
         }
     }
+    let s = eigen.s();
+    for (i, val) in eigvals_out.iter_mut().enumerate() {
+        *val = s.column_vector().read(i);
+    }
 
-    unsafe { *info = 0 };
+    unsafe { *info_ptr = 0 };
+}
+
+// ---------------------------------------------------------------------------
+// Cranelift IR lowering for each LAPACK custom_call
+// ---------------------------------------------------------------------------
+
+fn store_f64_vals(
+    builder: &mut FunctionBuilder,
+    vals: &[cranelift_codegen::ir::Value],
+    base: cranelift_codegen::ir::Value,
+    offset: i32,
+) {
+    for (i, &v) in vals.iter().enumerate() {
+        builder
+            .ins()
+            .store(MemFlags::trusted(), v, base, offset + (i * 8) as i32);
+    }
+}
+
+fn load_f64_vals(
+    builder: &mut FunctionBuilder,
+    count: usize,
+    base: cranelift_codegen::ir::Value,
+    offset: i32,
+) -> Vec<cranelift_codegen::ir::Value> {
+    (0..count)
+        .map(|i| {
+            builder.ins().load(
+                types::F64,
+                MemFlags::trusted(),
+                base,
+                offset + (i * 8) as i32,
+            )
+        })
+        .collect()
+}
+
+fn load_i32_vals(
+    builder: &mut FunctionBuilder,
+    count: usize,
+    base: cranelift_codegen::ir::Value,
+    offset: i32,
+) -> Vec<cranelift_codegen::ir::Value> {
+    (0..count)
+        .map(|i| {
+            builder.ins().load(
+                types::I32,
+                MemFlags::trusted(),
+                base,
+                offset + (i * 4) as i32,
+            )
+        })
+        .collect()
 }
 
 fn lower_svd_custom_call(
@@ -4866,11 +5230,10 @@ fn lower_svd_custom_call(
         ));
     }
 
-    let elem_sz = 8usize; // f64
-    let a_bytes = n * n * elem_sz;
-    let u_bytes = n * n * elem_sz;
-    let s_bytes = n * elem_sz;
-    let vt_bytes = n * n * elem_sz;
+    let a_bytes = n * n * 8;
+    let u_bytes = n * n * 8;
+    let s_bytes = n * 8;
+    let vt_bytes = n * n * 8;
     let info_bytes = 4;
     let total = a_bytes + u_bytes + s_bytes + vt_bytes + info_bytes;
 
@@ -4881,93 +5244,449 @@ fn lower_svd_custom_call(
     ));
     let base = builder.ins().stack_addr(ptr_type(), ss, 0);
 
-    // Store input matrix A
-    for (i, &v) in a_vals.iter().enumerate() {
-        builder
-            .ins()
-            .store(MemFlags::trusted(), v, base, (i * elem_sz) as i32);
-    }
+    store_f64_vals(builder, a_vals, base, 0);
 
     let u_off = a_bytes as i32;
     let s_off = (a_bytes + u_bytes) as i32;
     let vt_off = (a_bytes + u_bytes + s_bytes) as i32;
     let info_off = (a_bytes + u_bytes + s_bytes + vt_bytes) as i32;
 
-    let a_ptr = base;
     let u_ptr = builder.ins().iadd_imm(base, u_off as i64);
     let s_ptr = builder.ins().iadd_imm(base, s_off as i64);
     let vt_ptr = builder.ins().iadd_imm(base, vt_off as i64);
     let info_ptr = builder.ins().iadd_imm(base, info_off as i64);
 
+    // fn(a_ptr, n, u_ptr, s_ptr, vt_ptr, info_ptr)
     let mut sig = jit_module.make_signature();
     sig.call_conv = jit_module.isa().default_call_conv();
-    for _ in 0..5 {
+    sig.params.push(AbiParam::new(ptr_type()));
+    sig.params.push(AbiParam::new(types::I64));
+    for _ in 0..4 {
         sig.params.push(AbiParam::new(ptr_type()));
     }
-    let svd_func_id = jit_module
-        .declare_function("__cranelift_svd_3x3", Linkage::Import, &sig)
+    let func_id = jit_module
+        .declare_function("__cranelift_svd", Linkage::Import, &sig)
         .map_err(|e| format!("declare svd: {e}"))?;
-    let svd_ref = jit_module.declare_func_in_func(svd_func_id, builder.func);
+    let func_ref = jit_module.declare_func_in_func(func_id, builder.func);
+
+    let n_val = builder.ins().iconst(types::I64, n as i64);
     builder
         .ins()
-        .call(svd_ref, &[a_ptr, u_ptr, s_ptr, vt_ptr, info_ptr]);
+        .call(func_ref, &[base, n_val, u_ptr, s_ptr, vt_ptr, info_ptr]);
 
-    // Read back results
-    // Result types from StableHLO: (tensor<NxNxf64>, tensor<Nxf64>, tensor<NxNxf64>, tensor<NxNxf64>, tensor<i32>)
     let mut result_groups = Vec::new();
+    result_groups.push(load_f64_vals(builder, n * n, base, u_off));
+    result_groups.push(load_f64_vals(builder, n, base, s_off));
+    result_groups.push(load_f64_vals(builder, n * n, base, vt_off));
 
-    // Result 0: U (NxN f64) -- often the modified input
-    let mut u_vals = Vec::with_capacity(n * n);
-    for i in 0..(n * n) {
-        let v = builder.ins().load(
-            types::F64,
-            MemFlags::trusted(),
-            base,
-            u_off + (i * elem_sz) as i32,
-        );
-        u_vals.push(v);
-    }
-    result_groups.push(u_vals);
-
-    // Result 1: S (N f64)
-    let mut s_vals = Vec::with_capacity(n);
-    for i in 0..n {
-        let v = builder.ins().load(
-            types::F64,
-            MemFlags::trusted(),
-            base,
-            s_off + (i * elem_sz) as i32,
-        );
-        s_vals.push(v);
-    }
-    result_groups.push(s_vals);
-
-    // Result 2: Vt (NxN f64)
-    let mut vt_vals = Vec::with_capacity(n * n);
-    for i in 0..(n * n) {
-        let v = builder.ins().load(
-            types::F64,
-            MemFlags::trusted(),
-            base,
-            vt_off + (i * elem_sz) as i32,
-        );
-        vt_vals.push(v);
-    }
-    result_groups.push(vt_vals);
-
-    // Result 3: another NxN (workspace, just return zeros)
     if result_types.len() > 3 {
         let zero = builder.ins().f64const(0.0);
         result_groups.push(vec![zero; n * n]);
     }
-
-    // Result 4: info (i32)
     if result_types.len() > 4 {
         let info_val = builder
             .ins()
             .load(types::I32, MemFlags::trusted(), base, info_off);
         result_groups.push(vec![info_val]);
     }
+
+    Ok(result_groups)
+}
+
+fn lower_lu_custom_call(
+    builder: &mut FunctionBuilder,
+    operands: &[ValueId],
+    result_types: &[TensorType],
+    value_map: &HashMap<ValueId, TensorVals>,
+    _type_map: &HashMap<ValueId, TensorType>,
+    jit_module: &mut JITModule,
+) -> Result<Vec<TensorVals>, String> {
+    let a_vals = get_vals(value_map, &operands[0])?;
+    let n = (a_vals.len() as f64).sqrt() as usize;
+    if n * n != a_vals.len() {
+        return Err(format!("LU: non-square matrix ({} elements)", a_vals.len()));
+    }
+    let m = n;
+
+    let lu_bytes = m * n * 8;
+    let ipiv_bytes = m.min(n) * 4;
+    let info_bytes = 4;
+    let total = lu_bytes + lu_bytes + ipiv_bytes + info_bytes;
+
+    let ss = builder.create_sized_stack_slot(StackSlotData::new(
+        StackSlotKind::ExplicitSlot,
+        total as u32,
+        3,
+    ));
+    let base = builder.ins().stack_addr(ptr_type(), ss, 0);
+
+    store_f64_vals(builder, a_vals, base, 0);
+
+    let lu_off = lu_bytes as i32;
+    let ipiv_off = (lu_bytes + lu_bytes) as i32;
+    let info_off = (lu_bytes + lu_bytes + ipiv_bytes) as i32;
+
+    let lu_ptr = builder.ins().iadd_imm(base, lu_off as i64);
+    let ipiv_ptr = builder.ins().iadd_imm(base, ipiv_off as i64);
+    let info_ptr = builder.ins().iadd_imm(base, info_off as i64);
+
+    // fn(a_ptr, m, n, lu_ptr, ipiv_ptr, info_ptr) = 1 ptr + 2 i64 + 3 ptr
+    let mut sig = jit_module.make_signature();
+    sig.call_conv = jit_module.isa().default_call_conv();
+    sig.params.push(AbiParam::new(ptr_type()));
+    sig.params.push(AbiParam::new(types::I64));
+    sig.params.push(AbiParam::new(types::I64));
+    sig.params.push(AbiParam::new(ptr_type()));
+    sig.params.push(AbiParam::new(ptr_type()));
+    sig.params.push(AbiParam::new(ptr_type()));
+    let func_id = jit_module
+        .declare_function("__cranelift_lu", Linkage::Import, &sig)
+        .map_err(|e| format!("declare lu: {e}"))?;
+    let func_ref = jit_module.declare_func_in_func(func_id, builder.func);
+
+    let m_val = builder.ins().iconst(types::I64, m as i64);
+    let n_val = builder.ins().iconst(types::I64, n as i64);
+    builder
+        .ins()
+        .call(func_ref, &[base, m_val, n_val, lu_ptr, ipiv_ptr, info_ptr]);
+
+    let mut result_groups = Vec::new();
+    result_groups.push(load_f64_vals(builder, m * n, base, lu_off));
+    result_groups.push(load_i32_vals(builder, m.min(n), base, ipiv_off));
+    let info_val = builder
+        .ins()
+        .load(types::I32, MemFlags::trusted(), base, info_off);
+    result_groups.push(vec![info_val]);
+
+    Ok(result_groups)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn lower_trsm_custom_call(
+    builder: &mut FunctionBuilder,
+    operands: &[ValueId],
+    result_types: &[TensorType],
+    value_map: &HashMap<ValueId, TensorVals>,
+    _type_map: &HashMap<ValueId, TensorType>,
+    jit_module: &mut JITModule,
+    backend_config: &HashMap<String, i64>,
+) -> Result<Vec<TensorVals>, String> {
+    let a_vals = get_vals(value_map, &operands[0])?;
+    let b_vals = get_vals(value_map, &operands[1])?;
+
+    let rt = &result_types[0];
+    let (m, nrhs) = if rt.shape.len() == 2 {
+        (rt.shape[0] as usize, rt.shape[1] as usize)
+    } else {
+        return Err("TRSM: expected 2D result".to_string());
+    };
+    let n = (a_vals.len() as f64).sqrt() as usize;
+
+    let a_bytes = a_vals.len() * 8;
+    let b_bytes = b_vals.len() * 8;
+    let out_bytes = m * nrhs * 8;
+    let total = a_bytes + b_bytes + out_bytes;
+
+    let ss = builder.create_sized_stack_slot(StackSlotData::new(
+        StackSlotKind::ExplicitSlot,
+        total as u32,
+        3,
+    ));
+    let base = builder.ins().stack_addr(ptr_type(), ss, 0);
+
+    store_f64_vals(builder, a_vals, base, 0);
+    let b_off = a_bytes as i32;
+    store_f64_vals(builder, b_vals, base, b_off);
+    let out_off = (a_bytes + b_bytes) as i32;
+    let b_ptr = builder.ins().iadd_imm(base, b_off as i64);
+    let out_ptr = builder.ins().iadd_imm(base, out_off as i64);
+
+    let uplo = *backend_config.get("uplo").unwrap_or(&(b'L' as i64)) as u8;
+    let diag = *backend_config.get("diag").unwrap_or(&(b'N' as i64)) as u8;
+
+    // fn(a_ptr, b_ptr, m, n, nrhs, uplo, diag, out_ptr)
+    let mut sig = jit_module.make_signature();
+    sig.call_conv = jit_module.isa().default_call_conv();
+    for _ in 0..2 {
+        sig.params.push(AbiParam::new(ptr_type()));
+    }
+    for _ in 0..3 {
+        sig.params.push(AbiParam::new(types::I64));
+    }
+    for _ in 0..2 {
+        sig.params.push(AbiParam::new(types::I8));
+    }
+    sig.params.push(AbiParam::new(ptr_type()));
+    let func_id = jit_module
+        .declare_function("__cranelift_trsm", Linkage::Import, &sig)
+        .map_err(|e| format!("declare trsm: {e}"))?;
+    let func_ref = jit_module.declare_func_in_func(func_id, builder.func);
+
+    let m_val = builder.ins().iconst(types::I64, m as i64);
+    let n_imm = builder.ins().iconst(types::I64, n as i64);
+    let nrhs_val = builder.ins().iconst(types::I64, nrhs as i64);
+    let uplo_val = builder.ins().iconst(types::I8, uplo as i64);
+    let diag_val = builder.ins().iconst(types::I8, diag as i64);
+    builder.ins().call(
+        func_ref,
+        &[
+            base, b_ptr, m_val, n_imm, nrhs_val, uplo_val, diag_val, out_ptr,
+        ],
+    );
+
+    Ok(vec![load_f64_vals(builder, m * nrhs, base, out_off)])
+}
+
+fn lower_cholesky_custom_call(
+    builder: &mut FunctionBuilder,
+    operands: &[ValueId],
+    result_types: &[TensorType],
+    value_map: &HashMap<ValueId, TensorVals>,
+    _type_map: &HashMap<ValueId, TensorType>,
+    jit_module: &mut JITModule,
+) -> Result<Vec<TensorVals>, String> {
+    let a_vals = get_vals(value_map, &operands[0])?;
+    let n = (a_vals.len() as f64).sqrt() as usize;
+    if n * n != a_vals.len() {
+        return Err(format!(
+            "Cholesky: non-square matrix ({} elements)",
+            a_vals.len()
+        ));
+    }
+
+    let a_bytes = n * n * 8;
+    let l_bytes = n * n * 8;
+    let info_bytes = 4;
+    let total = a_bytes + l_bytes + info_bytes;
+
+    let ss = builder.create_sized_stack_slot(StackSlotData::new(
+        StackSlotKind::ExplicitSlot,
+        total as u32,
+        3,
+    ));
+    let base = builder.ins().stack_addr(ptr_type(), ss, 0);
+
+    store_f64_vals(builder, a_vals, base, 0);
+
+    let l_off = a_bytes as i32;
+    let info_off = (a_bytes + l_bytes) as i32;
+    let l_ptr = builder.ins().iadd_imm(base, l_off as i64);
+    let info_ptr = builder.ins().iadd_imm(base, info_off as i64);
+
+    // fn(a_ptr, n, l_ptr, info_ptr)
+    let mut sig = jit_module.make_signature();
+    sig.call_conv = jit_module.isa().default_call_conv();
+    sig.params.push(AbiParam::new(ptr_type()));
+    sig.params.push(AbiParam::new(types::I64));
+    sig.params.push(AbiParam::new(ptr_type()));
+    sig.params.push(AbiParam::new(ptr_type()));
+    let func_id = jit_module
+        .declare_function("__cranelift_cholesky", Linkage::Import, &sig)
+        .map_err(|e| format!("declare cholesky: {e}"))?;
+    let func_ref = jit_module.declare_func_in_func(func_id, builder.func);
+
+    let n_val = builder.ins().iconst(types::I64, n as i64);
+    builder
+        .ins()
+        .call(func_ref, &[base, n_val, l_ptr, info_ptr]);
+
+    let mut result_groups = Vec::new();
+    result_groups.push(load_f64_vals(builder, n * n, base, l_off));
+    let info_val = builder
+        .ins()
+        .load(types::I32, MemFlags::trusted(), base, info_off);
+    result_groups.push(vec![info_val]);
+
+    Ok(result_groups)
+}
+
+fn lower_qr_custom_call(
+    builder: &mut FunctionBuilder,
+    operands: &[ValueId],
+    result_types: &[TensorType],
+    value_map: &HashMap<ValueId, TensorVals>,
+    _type_map: &HashMap<ValueId, TensorType>,
+    jit_module: &mut JITModule,
+) -> Result<Vec<TensorVals>, String> {
+    let a_vals = get_vals(value_map, &operands[0])?;
+    let rt = &result_types[0];
+    let (m, n) = if rt.shape.len() == 2 {
+        (rt.shape[0] as usize, rt.shape[1] as usize)
+    } else {
+        return Err("QR: expected 2D result".to_string());
+    };
+
+    let a_bytes = m * n * 8;
+    let qr_bytes = m * n * 8;
+    let tau_bytes = m.min(n) * 8;
+    let total = a_bytes + qr_bytes + tau_bytes;
+
+    let ss = builder.create_sized_stack_slot(StackSlotData::new(
+        StackSlotKind::ExplicitSlot,
+        total as u32,
+        3,
+    ));
+    let base = builder.ins().stack_addr(ptr_type(), ss, 0);
+
+    store_f64_vals(builder, a_vals, base, 0);
+
+    let qr_off = a_bytes as i32;
+    let tau_off = (a_bytes + qr_bytes) as i32;
+    let qr_ptr = builder.ins().iadd_imm(base, qr_off as i64);
+    let tau_ptr = builder.ins().iadd_imm(base, tau_off as i64);
+
+    // fn(a_ptr, m, n, qr_ptr, tau_ptr)
+    let mut sig = jit_module.make_signature();
+    sig.call_conv = jit_module.isa().default_call_conv();
+    sig.params.push(AbiParam::new(ptr_type()));
+    sig.params.push(AbiParam::new(types::I64));
+    sig.params.push(AbiParam::new(types::I64));
+    sig.params.push(AbiParam::new(ptr_type()));
+    sig.params.push(AbiParam::new(ptr_type()));
+    let func_id = jit_module
+        .declare_function("__cranelift_qr", Linkage::Import, &sig)
+        .map_err(|e| format!("declare qr: {e}"))?;
+    let func_ref = jit_module.declare_func_in_func(func_id, builder.func);
+
+    let m_val = builder.ins().iconst(types::I64, m as i64);
+    let n_val = builder.ins().iconst(types::I64, n as i64);
+    builder
+        .ins()
+        .call(func_ref, &[base, m_val, n_val, qr_ptr, tau_ptr]);
+
+    let result_groups = vec![
+        load_f64_vals(builder, m * n, base, qr_off),
+        load_f64_vals(builder, m.min(n), base, tau_off),
+    ];
+
+    Ok(result_groups)
+}
+
+fn lower_orgqr_custom_call(
+    builder: &mut FunctionBuilder,
+    operands: &[ValueId],
+    result_types: &[TensorType],
+    value_map: &HashMap<ValueId, TensorVals>,
+    _type_map: &HashMap<ValueId, TensorType>,
+    jit_module: &mut JITModule,
+) -> Result<Vec<TensorVals>, String> {
+    let qr_vals = get_vals(value_map, &operands[0])?;
+    let tau_vals = get_vals(value_map, &operands[1])?;
+
+    let rt = &result_types[0];
+    let (m, n) = if rt.shape.len() == 2 {
+        (rt.shape[0] as usize, rt.shape[1] as usize)
+    } else {
+        return Err("ORGQR: expected 2D result".to_string());
+    };
+
+    let qr_bytes = qr_vals.len() * 8;
+    let tau_bytes = tau_vals.len() * 8;
+    let q_bytes = m * n * 8;
+    let total = qr_bytes + tau_bytes + q_bytes;
+
+    let ss = builder.create_sized_stack_slot(StackSlotData::new(
+        StackSlotKind::ExplicitSlot,
+        total as u32,
+        3,
+    ));
+    let base = builder.ins().stack_addr(ptr_type(), ss, 0);
+
+    store_f64_vals(builder, qr_vals, base, 0);
+    let tau_off = qr_bytes as i32;
+    store_f64_vals(builder, tau_vals, base, tau_off);
+    let q_off = (qr_bytes + tau_bytes) as i32;
+
+    let tau_ptr = builder.ins().iadd_imm(base, tau_off as i64);
+    let q_ptr = builder.ins().iadd_imm(base, q_off as i64);
+
+    // fn(qr_ptr, tau_ptr, m, n, q_ptr)
+    let mut sig = jit_module.make_signature();
+    sig.call_conv = jit_module.isa().default_call_conv();
+    sig.params.push(AbiParam::new(ptr_type()));
+    sig.params.push(AbiParam::new(ptr_type()));
+    sig.params.push(AbiParam::new(types::I64));
+    sig.params.push(AbiParam::new(types::I64));
+    sig.params.push(AbiParam::new(ptr_type()));
+    let func_id = jit_module
+        .declare_function("__cranelift_orgqr", Linkage::Import, &sig)
+        .map_err(|e| format!("declare orgqr: {e}"))?;
+    let func_ref = jit_module.declare_func_in_func(func_id, builder.func);
+
+    let m_val = builder.ins().iconst(types::I64, m as i64);
+    let n_val = builder.ins().iconst(types::I64, n as i64);
+    builder
+        .ins()
+        .call(func_ref, &[base, tau_ptr, m_val, n_val, q_ptr]);
+
+    Ok(vec![load_f64_vals(builder, m * n, base, q_off)])
+}
+
+fn lower_syevd_custom_call(
+    builder: &mut FunctionBuilder,
+    operands: &[ValueId],
+    result_types: &[TensorType],
+    value_map: &HashMap<ValueId, TensorVals>,
+    _type_map: &HashMap<ValueId, TensorType>,
+    jit_module: &mut JITModule,
+) -> Result<Vec<TensorVals>, String> {
+    let a_vals = get_vals(value_map, &operands[0])?;
+    let n = (a_vals.len() as f64).sqrt() as usize;
+    if n * n != a_vals.len() {
+        return Err(format!(
+            "SYEVD: non-square matrix ({} elements)",
+            a_vals.len()
+        ));
+    }
+
+    let a_bytes = n * n * 8;
+    let eigvecs_bytes = n * n * 8;
+    let eigvals_bytes = n * 8;
+    let info_bytes = 4;
+    let total = a_bytes + eigvecs_bytes + eigvals_bytes + info_bytes;
+
+    let ss = builder.create_sized_stack_slot(StackSlotData::new(
+        StackSlotKind::ExplicitSlot,
+        total as u32,
+        3,
+    ));
+    let base = builder.ins().stack_addr(ptr_type(), ss, 0);
+
+    store_f64_vals(builder, a_vals, base, 0);
+
+    let eigvecs_off = a_bytes as i32;
+    let eigvals_off = (a_bytes + eigvecs_bytes) as i32;
+    let info_off = (a_bytes + eigvecs_bytes + eigvals_bytes) as i32;
+
+    let eigvecs_ptr = builder.ins().iadd_imm(base, eigvecs_off as i64);
+    let eigvals_ptr = builder.ins().iadd_imm(base, eigvals_off as i64);
+    let info_ptr = builder.ins().iadd_imm(base, info_off as i64);
+
+    // fn(a_ptr, n, eigvecs_ptr, eigvals_ptr, info_ptr)
+    let mut sig = jit_module.make_signature();
+    sig.call_conv = jit_module.isa().default_call_conv();
+    sig.params.push(AbiParam::new(ptr_type()));
+    sig.params.push(AbiParam::new(types::I64));
+    for _ in 0..3 {
+        sig.params.push(AbiParam::new(ptr_type()));
+    }
+    let func_id = jit_module
+        .declare_function("__cranelift_syevd", Linkage::Import, &sig)
+        .map_err(|e| format!("declare syevd: {e}"))?;
+    let func_ref = jit_module.declare_func_in_func(func_id, builder.func);
+
+    let n_val = builder.ins().iconst(types::I64, n as i64);
+    builder
+        .ins()
+        .call(func_ref, &[base, n_val, eigvecs_ptr, eigvals_ptr, info_ptr]);
+
+    let mut result_groups = Vec::new();
+    result_groups.push(load_f64_vals(builder, n * n, base, eigvecs_off));
+    result_groups.push(load_f64_vals(builder, n, base, eigvals_off));
+    let info_val = builder
+        .ins()
+        .load(types::I32, MemFlags::trusted(), base, info_off);
+    result_groups.push(vec![info_val]);
 
     Ok(result_groups)
 }
