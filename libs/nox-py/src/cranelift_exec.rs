@@ -20,6 +20,7 @@ pub struct CraneliftExec {
     output_buffers: Vec<Vec<u8>>,
     dup_scratch: Vec<u8>,
     _compiled: cranelift_mlir::lower::CompiledModule,
+    checkpoint_done: bool,
 }
 
 // The JIT-compiled function pointer is safe to send between threads;
@@ -90,6 +91,7 @@ impl CraneliftExec {
             output_buffers,
             dup_scratch,
             _compiled: compiled,
+            checkpoint_done: false,
         })
     }
 
@@ -124,8 +126,20 @@ impl CraneliftExec {
                 }
             }
 
+            let checkpoint_this_tick = !self.checkpoint_done
+                && batch_idx == 0
+                && std::env::var("ELODIN_CRANELIFT_CHECKPOINT_DIR").is_ok();
+            if checkpoint_this_tick {
+                self.save_checkpoint_inputs(&input_ptrs, world);
+            }
+
             unsafe {
                 (self.tick_fn)(input_ptrs.as_ptr(), output_ptrs.as_mut_ptr());
+            }
+
+            if checkpoint_this_tick {
+                self.save_checkpoint_outputs();
+                self.checkpoint_done = true;
             }
 
             if batch_idx + 1 < batch_ticks {
@@ -148,6 +162,77 @@ impl CraneliftExec {
         }
 
         Ok(TickTimings::default())
+    }
+}
+
+impl CraneliftExec {
+    fn save_checkpoint_inputs(&self, input_ptrs: &[*const u8], world: &World) {
+        let Ok(dir) = std::env::var("ELODIN_CRANELIFT_CHECKPOINT_DIR") else {
+            return;
+        };
+        let _ = std::fs::create_dir_all(&dir);
+        for (i, (&ptr, id)) in input_ptrs.iter().zip(self.input_ids.iter()).enumerate() {
+            if ptr.is_null() {
+                continue;
+            }
+            if let Some(col) = world.column_by_id(*id) {
+                let data = &col.column;
+                let path = format!("{dir}/input_{i}.bin");
+                let _ = std::fs::write(&path, data);
+            }
+        }
+        let mut meta = serde_json::Map::new();
+        let mut inputs_meta = Vec::new();
+        for (i, id) in self.input_ids.iter().enumerate() {
+            let mut m = serde_json::Map::new();
+            m.insert("index".into(), serde_json::Value::from(i));
+            m.insert("component_id".into(), serde_json::Value::from(id.0));
+            if let Some(col) = world.column_by_id(*id) {
+                m.insert("byte_size".into(), serde_json::Value::from(col.column.len()));
+            }
+            inputs_meta.push(serde_json::Value::Object(m));
+        }
+        meta.insert("inputs".into(), serde_json::Value::Array(inputs_meta));
+
+        let mut outputs_meta = Vec::new();
+        for (i, id) in self.output_ids.iter().enumerate() {
+            let mut m = serde_json::Map::new();
+            m.insert("index".into(), serde_json::Value::from(i));
+            m.insert("component_id".into(), serde_json::Value::from(id.0));
+            m.insert(
+                "byte_size".into(),
+                serde_json::Value::from(self.output_buffers[i].len()),
+            );
+            outputs_meta.push(serde_json::Value::Object(m));
+        }
+        meta.insert("outputs".into(), serde_json::Value::Array(outputs_meta));
+        meta.insert(
+            "num_output_slots".into(),
+            serde_json::Value::from(self.metadata.ret_ids.len()),
+        );
+
+        let path = format!("{dir}/checkpoint.json");
+        if let Ok(json) = serde_json::to_string_pretty(&serde_json::Value::Object(meta)) {
+            let _ = std::fs::write(&path, json);
+        }
+        eprintln!(
+            "[elodin-cranelift] checkpoint: saved {} inputs to {dir}",
+            self.input_ids.len()
+        );
+    }
+
+    fn save_checkpoint_outputs(&self) {
+        let Ok(dir) = std::env::var("ELODIN_CRANELIFT_CHECKPOINT_DIR") else {
+            return;
+        };
+        for (i, buf) in self.output_buffers.iter().enumerate() {
+            let path = format!("{dir}/cranelift_output_{i}.bin");
+            let _ = std::fs::write(&path, buf);
+        }
+        eprintln!(
+            "[elodin-cranelift] checkpoint: saved {} outputs to {dir}",
+            self.output_buffers.len()
+        );
     }
 }
 

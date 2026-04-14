@@ -1541,9 +1541,10 @@ fn parse_while_op(
         }
     }
 
-    let mut cond_ctx = ValueCtx::new();
+    let mut cond_ctx = ctx.child();
+    let mut cond_iter_ids = Vec::new();
     for name in &init_names {
-        cond_ctx.get_or_create(name);
+        cond_iter_ids.push(cond_ctx.get_or_create(name));
     }
 
     ws(input)?;
@@ -1556,9 +1557,10 @@ fn parse_while_op(
     let _ = '}'.parse_next(input)?;
     ws(input)?;
 
-    let mut body_ctx = ValueCtx::new();
+    let mut body_ctx = ctx.child();
+    let mut body_iter_ids = Vec::new();
     for name in &init_names {
-        body_ctx.get_or_create(name);
+        body_iter_ids.push(body_ctx.get_or_create(name));
     }
 
     let _ = "do".parse_next(input)?;
@@ -1581,6 +1583,7 @@ fn parse_while_op(
             cond_body,
             loop_body,
             init_values,
+            iter_arg_ids: body_iter_ids,
         },
     }))
 }

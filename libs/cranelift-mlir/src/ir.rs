@@ -284,6 +284,7 @@ pub enum Instruction {
         cond_body: Vec<InstrResult>,
         loop_body: Vec<InstrResult>,
         init_values: Vec<ValueId>,
+        iter_arg_ids: Vec<ValueId>,
     },
     Case {
         index: ValueId,

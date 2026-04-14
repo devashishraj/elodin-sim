@@ -421,6 +421,7 @@ struct TensorRtIds {
     reduce_min_f64: FuncId,
     scatter_f64: FuncId,
     gather_f64: FuncId,
+    gather_nd_f64: FuncId,
     matmul_f64: FuncId,
     slice_f64: FuncId,
     pad_f64: FuncId,
@@ -560,6 +561,10 @@ fn register_tensor_rt_symbols(jit_builder: &mut JITBuilder) {
     jit_builder.symbol(
         "__trt_gather_f64",
         tensor_rt::tensor_gather_f64 as *const u8,
+    );
+    jit_builder.symbol(
+        "__trt_gather_nd_f64",
+        tensor_rt::tensor_gather_nd_f64 as *const u8,
     );
     jit_builder.symbol(
         "__trt_matmul_f64",
@@ -743,6 +748,12 @@ fn declare_tensor_rt_functions(
             &[pt, pt, i64t, pt, i64t, i64t],
             &[],
         )?,
+        gather_nd_f64: decl(
+            jit_module,
+            "__trt_gather_nd_f64",
+            &[pt, pt, i64t, pt, i64t, i64t, pt, i64t, pt, pt, i64t],
+            &[],
+        )?,
         matmul_f64: decl(
             jit_module,
             "__trt_matmul_f64",
@@ -764,7 +775,7 @@ fn declare_tensor_rt_functions(
         concat_nd_f64: decl(
             jit_module,
             "__trt_concat_nd_f64",
-            &[pt, i64t, pt, i64t, pt, i64t, pt, pt, i64t, i64t],
+            &[pt, i64t, pt, i64t, pt, i64t, pt, pt, i64t, i64t, i64t],
             &[],
         )?,
         dynamic_slice_f64: decl(
@@ -1873,6 +1884,7 @@ fn lower_instruction_mem(
                 let a_shape_ptr = store_i64_array(builder, &a_ty.shape);
                 let rank_v = builder.ins().iconst(types::I64, rt.rank() as i64);
                 let dim_v = builder.ins().iconst(types::I64, dim as i64);
+                let esz_v = builder.ins().iconst(types::I64, elem_sz as i64);
                 builder.ins().call(
                     func_ref,
                     &[
@@ -1886,6 +1898,7 @@ fn lower_instruction_mem(
                         a_shape_ptr,
                         rank_v,
                         dim_v,
+                        esz_v,
                     ],
                 );
             } else {
@@ -2055,38 +2068,85 @@ fn lower_instruction_mem(
                 .get(indices)
                 .cloned()
                 .unwrap_or(TensorType::scalar(ElementType::I64));
-            let n_out = rt.num_elements();
-            let n_idx = if !dims.collapsed_slice_dims.is_empty() {
-                idx_ty.shape.first().copied().unwrap_or(1) as usize
+
+            let ivd = dims.index_vector_dim as usize;
+            let idx_rank = idx_ty.rank();
+            let n_index_dims = if ivd < idx_rank {
+                idx_ty.shape[ivd] as usize
             } else {
-                idx_ty.num_elements()
+                1
             };
-            let row_size = if n_idx > 0 { n_out / n_idx } else { 1 };
+            let use_nd = n_index_dims > 1 && !dims.start_index_map.is_empty();
+
+            let n_total_idx = idx_ty.num_elements();
             let idx_ptr = get(indices)?;
             let widened_idx = if matches!(idx_ty.element_type, ElementType::I32 | ElementType::UI32)
             {
-                let wide_buf = alloc_slot(builder, n_idx * 8);
+                let wide_buf = alloc_slot(builder, n_total_idx * 8);
                 let widen_ref =
                     jit_module.declare_func_in_func(trt_ids.widen_i32_to_i64, builder.func);
-                let n_idx_v2 = builder.ins().iconst(types::I64, n_idx as i64);
-                builder
-                    .ins()
-                    .call(widen_ref, &[wide_buf, idx_ptr, n_idx_v2]);
+                let n_v = builder.ins().iconst(types::I64, n_total_idx as i64);
+                builder.ins().call(widen_ref, &[wide_buf, idx_ptr, n_v]);
                 wide_buf
             } else {
                 idx_ptr
             };
+
             let dst = alloc_slot(builder, n * elem_sz);
-            let func_ref = jit_module.declare_func_in_func(trt_ids.gather_f64, builder.func);
-            let n_src_v = builder
-                .ins()
-                .iconst(types::I64, src_ty.num_elements() as i64);
-            let n_idx_v = builder.ins().iconst(types::I64, n_idx as i64);
-            let row_v = builder.ins().iconst(types::I64, row_size as i64);
-            builder.ins().call(
-                func_ref,
-                &[dst, get(operand)?, n_src_v, widened_idx, n_idx_v, row_v],
-            );
+
+            if use_nd {
+                let n_batch = if idx_rank > 1 {
+                    n_total_idx / n_index_dims
+                } else {
+                    1
+                };
+                let func_ref =
+                    jit_module.declare_func_in_func(trt_ids.gather_nd_f64, builder.func);
+                let n_src_v = builder
+                    .ins()
+                    .iconst(types::I64, src_ty.num_elements() as i64);
+                let n_batch_v = builder.ins().iconst(types::I64, n_batch as i64);
+                let n_idx_dims_v = builder.ins().iconst(types::I64, n_index_dims as i64);
+                let src_shape_ptr = store_i64_array(builder, &src_ty.shape);
+                let src_rank_v = builder.ins().iconst(types::I64, src_ty.rank() as i64);
+                let sim_ptr = store_i64_array(builder, &dims.start_index_map);
+                let ss_ptr = store_i64_array(builder, slice_sizes);
+                let n_dst_v = builder.ins().iconst(types::I64, n as i64);
+                builder.ins().call(
+                    func_ref,
+                    &[
+                        dst,
+                        get(operand)?,
+                        n_src_v,
+                        widened_idx,
+                        n_batch_v,
+                        n_idx_dims_v,
+                        src_shape_ptr,
+                        src_rank_v,
+                        sim_ptr,
+                        ss_ptr,
+                        n_dst_v,
+                    ],
+                );
+            } else {
+                let n_idx = if !dims.collapsed_slice_dims.is_empty() {
+                    idx_ty.shape.first().copied().unwrap_or(1) as usize
+                } else {
+                    n_total_idx
+                };
+                let row_size = if n_idx > 0 { n / n_idx } else { 1 };
+                let func_ref =
+                    jit_module.declare_func_in_func(trt_ids.gather_f64, builder.func);
+                let n_src_v = builder
+                    .ins()
+                    .iconst(types::I64, src_ty.num_elements() as i64);
+                let n_idx_v = builder.ins().iconst(types::I64, n_idx as i64);
+                let row_v = builder.ins().iconst(types::I64, row_size as i64);
+                builder.ins().call(
+                    func_ref,
+                    &[dst, get(operand)?, n_src_v, widened_idx, n_idx_v, row_v],
+                );
+            }
             Ok(vec![vec![dst]])
         }
 
@@ -2199,6 +2259,7 @@ fn lower_instruction_mem(
             cond_body,
             loop_body,
             init_values,
+            iter_arg_ids,
         } => {
             let mut slots: Vec<(cranelift_codegen::ir::StackSlot, TensorType)> = Vec::new();
             for vid in init_values {
@@ -2229,8 +2290,9 @@ fn lower_instruction_mem(
             let mut cond_tm = type_map.clone();
             for (i, (ss, ty)) in slots.iter().enumerate() {
                 let addr = builder.ins().stack_addr(ptr_type(), *ss, 0);
-                cond_vm.insert(ValueId(i as u32), vec![addr]);
-                cond_tm.insert(ValueId(i as u32), ty.clone());
+                let vid = iter_arg_ids.get(i).copied().unwrap_or(ValueId(i as u32));
+                cond_vm.insert(vid, vec![addr]);
+                cond_tm.insert(vid, ty.clone());
             }
             lower_body_mem(
                 builder,
@@ -2268,8 +2330,9 @@ fn lower_instruction_mem(
             let mut body_tm = type_map.clone();
             for (i, (ss, ty)) in slots.iter().enumerate() {
                 let addr = builder.ins().stack_addr(ptr_type(), *ss, 0);
-                body_vm.insert(ValueId(i as u32), vec![addr]);
-                body_tm.insert(ValueId(i as u32), ty.clone());
+                let vid = iter_arg_ids.get(i).copied().unwrap_or(ValueId(i as u32));
+                body_vm.insert(vid, vec![addr]);
+                body_tm.insert(vid, ty.clone());
             }
             lower_body_mem(
                 builder,
@@ -3305,11 +3368,13 @@ fn lower_instruction(
             cond_body,
             loop_body,
             init_values,
+            iter_arg_ids,
         } => lower_while(
             builder,
             cond_body,
             loop_body,
             init_values,
+            iter_arg_ids,
             result_types,
             ir_module,
             func_ids,
@@ -3520,11 +3585,13 @@ fn lower_instruction(
 // ---------------------------------------------------------------------------
 
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 fn lower_while(
     builder: &mut FunctionBuilder,
     cond_body: &[InstrResult],
     loop_body: &[InstrResult],
     init_values: &[ValueId],
+    iter_arg_ids: &[ValueId],
     result_types: &[TensorType],
     ir_module: &crate::ir::Module,
     func_ids: &HashMap<String, FuncId>,
@@ -3576,11 +3643,9 @@ fn lower_while(
     let mut offset = 0;
     for (i, (vals, ty)) in init_tensors.iter().enumerate() {
         let n = vals.len();
-        cond_vmap.insert(
-            ValueId(i as u32),
-            header_params[offset..offset + n].to_vec(),
-        );
-        cond_tmap.insert(ValueId(i as u32), ty.clone());
+        let vid = iter_arg_ids.get(i).copied().unwrap_or(ValueId(i as u32));
+        cond_vmap.insert(vid, header_params[offset..offset + n].to_vec());
+        cond_tmap.insert(vid, ty.clone());
         offset += n;
     }
 
@@ -3614,8 +3679,9 @@ fn lower_while(
     offset = 0;
     for (i, (vals, ty)) in init_tensors.iter().enumerate() {
         let n = vals.len();
-        body_vmap.insert(ValueId(i as u32), body_params[offset..offset + n].to_vec());
-        body_tmap.insert(ValueId(i as u32), ty.clone());
+        let vid = iter_arg_ids.get(i).copied().unwrap_or(ValueId(i as u32));
+        body_vmap.insert(vid, body_params[offset..offset + n].to_vec());
+        body_tmap.insert(vid, ty.clone());
         offset += n;
     }
 

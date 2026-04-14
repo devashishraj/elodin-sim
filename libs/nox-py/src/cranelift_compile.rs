@@ -42,6 +42,7 @@ import re
 import json
 import time
 import tempfile
+import numpy as np
 os.environ["JAX_ENABLE_X64"] = "1"
 jax.config.update("jax_enable_x64", True)
 
@@ -71,6 +72,23 @@ def lower_to_stablehlo(func, input_arrays):
         print(f'[elodin-cranelift] dumped StableHLO to {out_dir}', file=sys.stderr)
 
     return stablehlo_mlir
+
+def run_xla_reference(func, real_input_arrays, checkpoint_dir):
+    """Run the function with XLA and save reference outputs."""
+    import sys
+    try:
+        os.makedirs(checkpoint_dir, exist_ok=True)
+        jit_fn = jax.jit(func, keep_unused=True)
+        results = jit_fn(*real_input_arrays)
+        if not isinstance(results, (list, tuple)):
+            results = (results,)
+        for i, r in enumerate(results):
+            arr = np.asarray(r)
+            path = os.path.join(checkpoint_dir, f'xla_output_{i}.bin')
+            arr.tofile(path)
+        print(f'[elodin-cranelift] checkpoint: saved {len(results)} XLA reference outputs to {checkpoint_dir}', file=sys.stderr)
+    except Exception as e:
+        print(f'[elodin-cranelift] checkpoint: XLA reference failed: {e}', file=sys.stderr)
 "#;
 
     let module = PyModule::new(py, "cranelift_compile")?;
@@ -80,6 +98,7 @@ def lower_to_stablehlo(func, input_arrays):
     let lower_fn: Py<PyAny> = module.getattr("lower_to_stablehlo")?.into();
 
     let py_input_arrays = pyo3::types::PyList::new(py, input_arrays.iter().map(|a| a.bind(py)))?;
+    let func_for_xla = func.clone_ref(py);
 
     let lower_start = Instant::now();
     let result = lower_fn.call1(py, (func, py_input_arrays))?;
@@ -98,6 +117,35 @@ def lower_to_stablehlo(func, input_arrays):
         "[elodin-cranelift] lower={lower_ms:.1}ms compile={compile_ms:.1}ms total={:.1}ms",
         lower_ms + compile_ms,
     );
+
+    if let Ok(ckpt_dir) = std::env::var("ELODIN_CRANELIFT_CHECKPOINT_DIR") {
+        let xla_ref_fn: Py<PyAny> = module.getattr("run_xla_reference")?.into();
+        let np = py.import("numpy")?;
+        let jnp = py.import("jax.numpy")?;
+        let mut real_inputs = vec![];
+        let mut visited = HashSet::new();
+        for slot in &compiled_system.input_slots {
+            if !visited.insert(slot.component_id) {
+                continue;
+            }
+            if let Some(col) = world.column_by_id(slot.component_id) {
+                let dtype = nox::jax::dtype(&col.schema.prim_type.to_element_type())?;
+                let arr = np
+                    .getattr("frombuffer")?
+                    .call1((pyo3::types::PyBytes::new(py, &col.column), dtype))?;
+                let shape_vec: Vec<i64> = slot.shape.iter().map(|&d| d as i64).collect();
+                let reshaped = arr.call_method1("reshape", (shape_vec,))?;
+                let jax_arr = jnp.getattr("array")?.call1((reshaped,))?;
+                real_inputs.push(jax_arr.unbind());
+            }
+        }
+        let real_list =
+            pyo3::types::PyList::new(py, real_inputs.iter().map(|a| a.bind(py)))?;
+        let _ = xla_ref_fn.call1(py, (func_for_xla, real_list, &ckpt_dir));
+        let mlir_path = format!("{ckpt_dir}/stablehlo.mlir");
+        let _ = std::fs::write(&mlir_path, &stablehlo_mlir);
+        eprintln!("[elodin-cranelift] checkpoint: saved MLIR to {mlir_path}");
+    }
 
     let metadata = ExecMetadata {
         arg_ids: compiled_system.inputs.clone(),

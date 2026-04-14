@@ -2263,3 +2263,598 @@ module @module {
     let result = read_f64s(&out[0]);
     assert_f64s_close(&result, &[1.0, 2.0, 5.0, 3.0, 4.0, 6.0]);
 }
+
+#[test]
+fn test_gather_nd_2d_index_mem() {
+    // Gather individual elements from a 3x3 matrix using 2D index vectors
+    // Matrix: [[10,20,30],[40,50,60],[70,80,90]]
+    // Indices: [[0,1],[2,0],[1,2]] -> picks (0,1)=20, (2,0)=70, (1,2)=60
+    let mlir = r#"
+module @module {
+  func.func public @main(%arg0: tensor<3x3xf64>, %arg1: tensor<3x2xi32>) -> tensor<3x1x1xf64> {
+    %0 = "stablehlo.gather"(%arg0, %arg1) <{dimension_numbers = #stablehlo.gather<offset_dims = [1, 2], start_index_map = [0, 1], index_vector_dim = 1>, indices_are_sorted = false, slice_sizes = array<i64: 1, 1>}> : (tensor<3x3xf64>, tensor<3x2xi32>) -> tensor<3x1x1xf64>
+    return %0 : tensor<3x1x1xf64>
+  }
+}
+"#;
+    let mat = f64_buf(&[10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0, 90.0]);
+    let idx = i32_buf(&[0, 1, 2, 0, 1, 2]); // (0,1), (2,0), (1,2)
+    let out = run_mlir_mem(mlir, &[&mat, &idx], &[24]); // 3 * 8 bytes
+    let result = read_f64s(&out[0]);
+    assert_f64s_close(&result, &[20.0, 70.0, 60.0]);
+}
+
+#[test]
+fn test_coeff_broadcast_multiply_reduce_mem() {
+    // Test the EGM08 pattern: broadcast a 4-vector to 4x4, multiply by coefficient matrix, reduce
+    // coeff = [[1,0,0,0],[0,2,0,0],[0,0,3,0],[0,0,0,4]]  (diagonal)
+    // vec   = [10, 20, 30, 40]
+    // broadcast vec with dims=[1] -> each row = [10,20,30,40]
+    // product[i][j] = coeff[i][j] * vec[j]
+    // product = [[10,0,0,0],[0,40,0,0],[0,0,90,0],[0,0,0,160]]
+    // reduce across dim 1 -> [10, 40, 90, 160]
+    let mlir = r#"
+module @module {
+  func.func public @main(%arg0: tensor<4x4xf64>, %arg1: tensor<4xf64>) -> tensor<4xf64> {
+    %0 = stablehlo.broadcast_in_dim %arg1, dims = [1] : (tensor<4xf64>) -> tensor<1x4xf64>
+    %1 = stablehlo.broadcast_in_dim %0, dims = [0, 1] : (tensor<1x4xf64>) -> tensor<4x4xf64>
+    %2 = stablehlo.multiply %arg0, %1 : tensor<4x4xf64>
+    %cst = stablehlo.constant dense<0.0> : tensor<f64>
+    %3 = stablehlo.reduce(%2 init: %cst) applies stablehlo.add across dimensions = [1] : (tensor<4x4xf64>, tensor<f64>) -> tensor<4xf64>
+    return %3 : tensor<4xf64>
+  }
+}
+"#;
+    let coeff = f64_buf(&[1.0,0.0,0.0,0.0, 0.0,2.0,0.0,0.0, 0.0,0.0,3.0,0.0, 0.0,0.0,0.0,4.0]);
+    let vec_in = f64_buf(&[10.0, 20.0, 30.0, 40.0]);
+    let out = run_mlir_mem(mlir, &[&coeff, &vec_in], &[32]);
+    let result = read_f64s(&out[0]);
+    assert_f64s_close(&result, &[10.0, 40.0, 90.0, 160.0]);
+}
+
+#[test]
+fn test_roll_scatter_broadcast_reduce_mem() {
+    // Full EGM08-like pattern: roll vector, scatter zero at idx 0, broadcast, multiply, reduce
+    // Input vec: [100, 200, 300, 400]
+    // Roll left by 1: [200, 300, 400, 100]
+    // Scatter idx 0 to 0: [0, 300, 400, 100]
+    // Broadcast to 4x4 (each row = same): [[0,300,400,100], ...]
+    // Multiply by identity-like coeff: [[1,0,0,0],[0,1,0,0],[0,0,1,0],[0,0,0,1]]
+    // Product: [[0,0,0,0],[0,300,0,0],[0,0,400,0],[0,0,0,100]]
+    // Reduce dim 1: [0, 300, 400, 100]
+    let mlir = r#"
+module @module {
+  func.func public @main(%arg0: tensor<4xf64>, %arg1: tensor<4x4xf64>) -> tensor<4xf64> {
+    %0 = stablehlo.slice %arg0 [1:4] : (tensor<4xf64>) -> tensor<3xf64>
+    %1 = stablehlo.slice %arg0 [0:1] : (tensor<4xf64>) -> tensor<1xf64>
+    %2 = stablehlo.concatenate %0, %1, dim = 0 : (tensor<3xf64>, tensor<1xf64>) -> tensor<4xf64>
+    %c = stablehlo.constant dense<0> : tensor<1xi32>
+    %cst_z = stablehlo.constant dense<0.0> : tensor<f64>
+    %3 = "stablehlo.scatter"(%2, %c, %cst_z) <{indices_are_sorted = true, scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0], scatter_dims_to_operand_dims = [0]>, unique_indices = true}> ({
+    ^bb0(%arg2: tensor<f64>, %arg3: tensor<f64>):
+      stablehlo.return %arg3 : tensor<f64>
+    }) : (tensor<4xf64>, tensor<1xi32>, tensor<f64>) -> tensor<4xf64>
+    %4 = stablehlo.broadcast_in_dim %3, dims = [1] : (tensor<4xf64>) -> tensor<1x4xf64>
+    %5 = stablehlo.broadcast_in_dim %4, dims = [0, 1] : (tensor<1x4xf64>) -> tensor<4x4xf64>
+    %6 = stablehlo.multiply %arg1, %5 : tensor<4x4xf64>
+    %cst = stablehlo.constant dense<0.0> : tensor<f64>
+    %7 = stablehlo.reduce(%6 init: %cst) applies stablehlo.add across dimensions = [1] : (tensor<4x4xf64>, tensor<f64>) -> tensor<4xf64>
+    return %7 : tensor<4xf64>
+  }
+}
+"#;
+    let vec_in = f64_buf(&[100.0, 200.0, 300.0, 400.0]);
+    let coeff = f64_buf(&[1.0,0.0,0.0,0.0, 0.0,1.0,0.0,0.0, 0.0,0.0,1.0,0.0, 0.0,0.0,0.0,1.0]);
+    let out = run_mlir_mem(mlir, &[&vec_in, &coeff], &[32]);
+    let result = read_f64s(&out[0]);
+    assert_f64s_close(&result, &[0.0, 300.0, 400.0, 100.0]);
+}
+
+#[test]
+fn test_while_cross_abi_accumulate_mem() {
+    // Tests the cube-sat pattern: pointer-ABI while loop calling scalar-ABI function,
+    // accumulating results in a vector via dynamic_update_slice.
+    // The scalar function doubles its input: f(x, i) = (2*x, x) for i>0, (x, x) for i==0
+    // Starting from 1.0, after 4 iterations: acc = [1, 2, 4, 8]
+    let mlir = r#"
+module @module {
+  func.func public @main(%arg0: tensor<f64>) -> tensor<4xf64> {
+    %cst_z = stablehlo.constant dense<0.000000e+00> : tensor<f64>
+    %acc_init = stablehlo.broadcast_in_dim %cst_z, dims = [] : (tensor<f64>) -> tensor<4xf64>
+    %c0 = stablehlo.constant dense<0> : tensor<i64>
+    %init_prev = stablehlo.constant dense<0.000000e+00> : tensor<f64>
+    %0:4 = stablehlo.while(%iterArg_0 = %arg0, %iterArg_1 = %init_prev, %iterArg_2 = %c0, %iterArg_3 = %acc_init) : tensor<f64>, tensor<f64>, tensor<i64>, tensor<4xf64>
+    cond {
+      %c4 = stablehlo.constant dense<4> : tensor<i64>
+      %cond = stablehlo.compare LT, %iterArg_2, %c4, SIGNED : (tensor<i64>, tensor<i64>) -> tensor<i1>
+      stablehlo.return %cond : tensor<i1>
+    } do {
+      %r:2 = func.call @double_fn(%iterArg_0, %iterArg_2) : (tensor<f64>, tensor<i64>) -> (tensor<f64>, tensor<f64>)
+      %bcast = stablehlo.broadcast_in_dim %r#1, dims = [] : (tensor<f64>) -> tensor<1xf64>
+      %new_acc = stablehlo.dynamic_update_slice %iterArg_3, %bcast, %iterArg_2 : (tensor<4xf64>, tensor<1xf64>, tensor<i64>) -> tensor<4xf64>
+      %c1 = stablehlo.constant dense<1> : tensor<i64>
+      %next_i = stablehlo.add %iterArg_2, %c1 : tensor<i64>
+      stablehlo.return %r#0, %iterArg_0, %next_i, %new_acc : tensor<f64>, tensor<f64>, tensor<i64>, tensor<4xf64>
+    }
+    return %0#3 : tensor<4xf64>
+  }
+  func.func private @double_fn(%arg0: tensor<f64>, %arg1: tensor<i64>) -> (tensor<f64>, tensor<f64>) {
+    %c0 = stablehlo.constant dense<0> : tensor<i64>
+    %is_zero = stablehlo.compare EQ, %arg1, %c0, SIGNED : (tensor<i64>, tensor<i64>) -> tensor<i1>
+    %doubled = stablehlo.add %arg0, %arg0 : tensor<f64>
+    %result = stablehlo.select %is_zero, %arg0, %doubled : tensor<i1>, tensor<f64>
+    return %result, %arg0 : tensor<f64>, tensor<f64>
+  }
+}
+"#;
+    let input = f64_buf(&[1.0]);
+    let out = run_mlir_mem(mlir, &[&input], &[32]);
+    let result = read_f64s(&out[0]);
+    // iter 0: is_zero=true, result=1.0, acc[0]=1.0, next_curr=1.0
+    // iter 1: doubled=2.0, acc[1]=1.0, next_curr=2.0
+    // iter 2: doubled=4.0, acc[2]=2.0, next_curr=4.0
+    // iter 3: doubled=8.0, acc[3]=4.0, next_curr=8.0
+    assert_f64s_close(&result, &[1.0, 1.0, 2.0, 4.0]);
+}
+
+#[test]
+fn test_transpose_broadcast_multiply_reduce_65x65_mem() {
+    // Reproduce the inner_375 pattern at 65x65 scale:
+    // 1. Take a 65x65 matrix (Legendre-like: all nonzero)
+    // 2. Transpose it
+    // 3. Broadcast a 65-vector as columns (scaling factors)
+    // 4. Elementwise multiply
+    // 5. Transpose back
+    // 6. Multiply by another 65x65 matrix (coefficient-like: lower triangular)
+    // 7. Reduce sum along dim 1
+    // Expected: row 0 of result should be nonzero
+    let mlir = r#"
+module @module {
+  func.func public @main(%arg0: tensor<65x65xf64>, %arg1: tensor<65xf64>, %arg2: tensor<65x65xf64>) -> tensor<65xf64> {
+    %0 = stablehlo.transpose %arg0, dims = [1, 0] : (tensor<65x65xf64>) -> tensor<65x65xf64>
+    %1 = stablehlo.broadcast_in_dim %arg1, dims = [1] : (tensor<65xf64>) -> tensor<1x65xf64>
+    %2 = stablehlo.broadcast_in_dim %1, dims = [0, 1] : (tensor<1x65xf64>) -> tensor<65x65xf64>
+    %3 = stablehlo.multiply %2, %0 : tensor<65x65xf64>
+    %4 = stablehlo.transpose %3, dims = [1, 0] : (tensor<65x65xf64>) -> tensor<65x65xf64>
+    %5 = stablehlo.multiply %4, %arg2 : tensor<65x65xf64>
+    %cst = stablehlo.constant dense<0.0> : tensor<f64>
+    %6 = stablehlo.reduce(%5 init: %cst) applies stablehlo.add across dimensions = [1] : (tensor<65x65xf64>, tensor<f64>) -> tensor<65xf64>
+    return %6 : tensor<65xf64>
+  }
+}
+"#;
+    // Matrix A: identity-like (1.0 on diagonal, 0.1 everywhere else)
+    let mut mat_a = vec![0.1f64; 65 * 65];
+    for i in 0..65 {
+        mat_a[i * 65 + i] = 1.0 + i as f64;
+    }
+    // Scaling vector: [1.0, 2.0, ..., 65.0]
+    let scale: Vec<f64> = (1..=65).map(|i| i as f64).collect();
+    // Coefficient matrix: identity
+    let mut coeff = vec![0.0f64; 65 * 65];
+    for i in 0..65 {
+        coeff[i * 65 + i] = 1.0;
+    }
+
+    let a_buf = f64_buf(&mat_a);
+    let s_buf = f64_buf(&scale);
+    let c_buf = f64_buf(&coeff);
+    let out = run_mlir_mem(mlir, &[&a_buf, &s_buf, &c_buf], &[65 * 8]);
+    let result = read_f64s(&out[0]);
+
+    // With identity coefficient, result[i] = sum_j(transpose(scale_broadcast * transpose(A))[i][j] * coeff[i][j])
+    // = transpose(scale_broadcast * transpose(A))[i][i] (only diagonal of coeff is nonzero)
+    // transpose(X)[i][i] = X[i][i], so result[i] = (scale_broadcast * transpose(A))[i][i]
+    // scale_broadcast[i][j] = scale[j], transpose(A)[i][j] = A[j][i]
+    // product[i][i] = scale[i] * A[i][i] = (i+1) * (1+i)
+    // result[0] = 1 * 1 = 1, result[1] = 2 * 2 = 4, result[2] = 3 * 3 = 9
+    assert!(result[0] != 0.0, "row 0 should be nonzero, got {}", result[0]);
+    let expected_diag: Vec<f64> = (0..65).map(|i| {
+        let s = (i + 1) as f64;
+        let a_ii = 1.0 + i as f64;
+        // Also off-diagonal contributions: sum_j(scale[j] * A[j][i] * coeff[i][j])
+        // coeff is identity, so only j=i contributes: scale[i] * A[i][i] = s * a_ii
+        s * a_ii
+    }).collect();
+    for i in 0..5 {
+        assert!(
+            (result[i] - expected_diag[i]).abs() < 1e-6,
+            "result[{i}] = {}, expected {}", result[i], expected_diag[i]
+        );
+    }
+}
+
+#[test]
+fn test_65x65_in_pointer_abi_callee_mem() {
+    // Same computation as above, but inside a pointer-ABI callee function
+    // called from main (cross-ABI: scalar main → pointer callee).
+    // This tests whether the pointer-ABI function boundary corrupts the result.
+    let mlir = r#"
+module @module {
+  func.func public @main(%arg0: tensor<65x65xf64>, %arg1: tensor<65xf64>, %arg2: tensor<65x65xf64>) -> tensor<65xf64> {
+    %0 = call @inner(%arg0, %arg1, %arg2) : (tensor<65x65xf64>, tensor<65xf64>, tensor<65x65xf64>) -> tensor<65xf64>
+    return %0 : tensor<65xf64>
+  }
+  func.func private @inner(%arg0: tensor<65x65xf64>, %arg1: tensor<65xf64>, %arg2: tensor<65x65xf64>) -> tensor<65xf64> {
+    %0 = stablehlo.transpose %arg0, dims = [1, 0] : (tensor<65x65xf64>) -> tensor<65x65xf64>
+    %1 = stablehlo.broadcast_in_dim %arg1, dims = [1] : (tensor<65xf64>) -> tensor<1x65xf64>
+    %2 = stablehlo.broadcast_in_dim %1, dims = [0, 1] : (tensor<1x65xf64>) -> tensor<65x65xf64>
+    %3 = stablehlo.multiply %2, %0 : tensor<65x65xf64>
+    %4 = stablehlo.transpose %3, dims = [1, 0] : (tensor<65x65xf64>) -> tensor<65x65xf64>
+    %5 = stablehlo.multiply %4, %arg2 : tensor<65x65xf64>
+    %cst = stablehlo.constant dense<0.0> : tensor<f64>
+    %6 = stablehlo.reduce(%5 init: %cst) applies stablehlo.add across dimensions = [1] : (tensor<65x65xf64>, tensor<f64>) -> tensor<65xf64>
+    return %6 : tensor<65xf64>
+  }
+}
+"#;
+    let mut mat_a = vec![0.1f64; 65 * 65];
+    for i in 0..65 { mat_a[i * 65 + i] = 1.0 + i as f64; }
+    let scale: Vec<f64> = (1..=65).map(|i| i as f64).collect();
+    let mut coeff = vec![0.0f64; 65 * 65];
+    for i in 0..65 { coeff[i * 65 + i] = 1.0; }
+
+    let a_buf = f64_buf(&mat_a);
+    let s_buf = f64_buf(&scale);
+    let c_buf = f64_buf(&coeff);
+    let out = run_mlir_mem(mlir, &[&a_buf, &s_buf, &c_buf], &[65 * 8]);
+    let result = read_f64s(&out[0]);
+    assert!(result[0] != 0.0, "row 0 should be nonzero, got {}", result[0]);
+    assert!((result[0] - 1.0).abs() < 1e-6, "result[0] = {}, expected 1.0", result[0]);
+    assert!((result[1] - 4.0).abs() < 1e-6, "result[1] = {}, expected 4.0", result[1]);
+}
+
+#[test]
+fn test_65x65_while_loop_builds_matrix_then_reduces_mem() {
+    // The actual inner_375 pattern: a while loop fills a 65x65 matrix row by row
+    // using dynamic_update_slice, then the matrix is transposed, broadcast-multiplied,
+    // and reduced. This tests whether the while-loop + DUS interaction corrupts memory.
+    let mlir = r#"
+module @module {
+  func.func public @main(%arg0: tensor<65xf64>) -> tensor<65xf64> {
+    %0 = call @build_and_reduce(%arg0) : (tensor<65xf64>) -> tensor<65xf64>
+    return %0 : tensor<65xf64>
+  }
+  func.func private @build_and_reduce(%arg0: tensor<65xf64>) -> tensor<65xf64> {
+    %cst_z = stablehlo.constant dense<0.000000e+00> : tensor<f64>
+    %mat_init = stablehlo.broadcast_in_dim %cst_z, dims = [] : (tensor<f64>) -> tensor<65x65xf64>
+    %c0 = stablehlo.constant dense<0> : tensor<i64>
+
+    %loop:2 = stablehlo.while(%iterArg_0 = %c0, %iterArg_1 = %mat_init) : tensor<i64>, tensor<65x65xf64>
+    cond {
+      %c65 = stablehlo.constant dense<65> : tensor<i64>
+      %cmp = stablehlo.compare LT, %iterArg_0, %c65, SIGNED : (tensor<i64>, tensor<i64>) -> tensor<i1>
+      stablehlo.return %cmp : tensor<i1>
+    } do {
+      %row = stablehlo.broadcast_in_dim %arg0, dims = [1] : (tensor<65xf64>) -> tensor<1x65xf64>
+      %c0_body = stablehlo.constant dense<0> : tensor<i64>
+      %new_mat = stablehlo.dynamic_update_slice %iterArg_1, %row, %iterArg_0, %c0_body : (tensor<65x65xf64>, tensor<1x65xf64>, tensor<i64>, tensor<i64>) -> tensor<65x65xf64>
+      %c1 = stablehlo.constant dense<1> : tensor<i64>
+      %next_i = stablehlo.add %iterArg_0, %c1 : tensor<i64>
+      stablehlo.return %next_i, %new_mat : tensor<i64>, tensor<65x65xf64>
+    }
+
+    %cst_reduce = stablehlo.constant dense<0.0> : tensor<f64>
+    %result = stablehlo.reduce(%loop#1 init: %cst_reduce) applies stablehlo.add across dimensions = [1] : (tensor<65x65xf64>, tensor<f64>) -> tensor<65xf64>
+    return %result : tensor<65xf64>
+  }
+}
+"#;
+    // Each row is the same vector [1, 2, 3, ..., 65]
+    let input: Vec<f64> = (1..=65).map(|i| i as f64).collect();
+    let i_buf = f64_buf(&input);
+    let out = run_mlir_mem(mlir, &[&i_buf], &[65 * 8]);
+    let result = read_f64s(&out[0]);
+    // After filling: mat[i][j] = j+1 for all i. reduce(dim=1) sums each row.
+    // Each row sum = 1+2+...+65 = 65*66/2 = 2145
+    let expected_sum = 65.0 * 66.0 / 2.0;
+    assert!((result[0] - expected_sum).abs() < 1e-6, "result[0] = {}, expected {}", result[0], expected_sum);
+    assert!((result[64] - expected_sum).abs() < 1e-6, "result[64] = {}, expected {}", result[64], expected_sum);
+}
+
+#[test]
+fn test_65x65_while_then_transpose_multiply_reduce_mem() {
+    // Full inner_375-like pattern: while loop fills matrix, then chain of
+    // transpose → broadcast → multiply → transpose → multiply → reduce.
+    // Two pointer-ABI functions: @build fills the matrix, @process does the chain.
+    let mlir = r#"
+module @module {
+  func.func public @main(%arg0: tensor<65xf64>, %arg1: tensor<65xf64>) -> tensor<65xf64> {
+    %mat = call @build(%arg0) : (tensor<65xf64>) -> tensor<65x65xf64>
+    %result = call @process(%mat, %arg1) : (tensor<65x65xf64>, tensor<65xf64>) -> tensor<65xf64>
+    return %result : tensor<65xf64>
+  }
+  func.func private @build(%arg0: tensor<65xf64>) -> tensor<65x65xf64> {
+    %cst_z = stablehlo.constant dense<0.000000e+00> : tensor<f64>
+    %mat_init = stablehlo.broadcast_in_dim %cst_z, dims = [] : (tensor<f64>) -> tensor<65x65xf64>
+    %c0 = stablehlo.constant dense<0> : tensor<i64>
+    %loop:2 = stablehlo.while(%iterArg_0 = %c0, %iterArg_1 = %mat_init) : tensor<i64>, tensor<65x65xf64>
+    cond {
+      %c65 = stablehlo.constant dense<65> : tensor<i64>
+      %cmp = stablehlo.compare LT, %iterArg_0, %c65, SIGNED : (tensor<i64>, tensor<i64>) -> tensor<i1>
+      stablehlo.return %cmp : tensor<i1>
+    } do {
+      %row = stablehlo.broadcast_in_dim %arg0, dims = [1] : (tensor<65xf64>) -> tensor<1x65xf64>
+      %c0_body = stablehlo.constant dense<0> : tensor<i64>
+      %new_mat = stablehlo.dynamic_update_slice %iterArg_1, %row, %iterArg_0, %c0_body : (tensor<65x65xf64>, tensor<1x65xf64>, tensor<i64>, tensor<i64>) -> tensor<65x65xf64>
+      %c1 = stablehlo.constant dense<1> : tensor<i64>
+      %next_i = stablehlo.add %iterArg_0, %c1 : tensor<i64>
+      stablehlo.return %next_i, %new_mat : tensor<i64>, tensor<65x65xf64>
+    }
+    return %loop#1 : tensor<65x65xf64>
+  }
+  func.func private @process(%arg0: tensor<65x65xf64>, %arg1: tensor<65xf64>) -> tensor<65xf64> {
+    %0 = stablehlo.transpose %arg0, dims = [1, 0] : (tensor<65x65xf64>) -> tensor<65x65xf64>
+    %1 = stablehlo.broadcast_in_dim %arg1, dims = [1] : (tensor<65xf64>) -> tensor<1x65xf64>
+    %2 = stablehlo.broadcast_in_dim %1, dims = [0, 1] : (tensor<1x65xf64>) -> tensor<65x65xf64>
+    %3 = stablehlo.multiply %2, %0 : tensor<65x65xf64>
+    %4 = stablehlo.transpose %3, dims = [1, 0] : (tensor<65x65xf64>) -> tensor<65x65xf64>
+    %cst = stablehlo.constant dense<0.0> : tensor<f64>
+    %5 = stablehlo.reduce(%4 init: %cst) applies stablehlo.add across dimensions = [1] : (tensor<65x65xf64>, tensor<f64>) -> tensor<65xf64>
+    return %5 : tensor<65xf64>
+  }
+}
+"#;
+    let row_vals: Vec<f64> = (1..=65).map(|i| i as f64).collect();
+    let scale: Vec<f64> = (1..=65).map(|i| i as f64).collect();
+    let r_buf = f64_buf(&row_vals);
+    let s_buf = f64_buf(&scale);
+    let out = run_mlir_mem(mlir, &[&r_buf, &s_buf], &[65 * 8]);
+    let result = read_f64s(&out[0]);
+    // mat[i][j] = j+1 for all i (all rows identical)
+    // transpose: mat_T[i][j] = mat[j][i] = i+1 (constant across columns)
+    // broadcast_scale[i][j] = scale[j] = j+1
+    // product = broadcast_scale * mat_T: product[i][j] = (j+1) * (i+1)
+    // transpose_back[i][j] = product[j][i] = (i+1) * (j+1)
+    // reduce(dim=1): sum_j (i+1)*(j+1) = (i+1) * sum(1..65) = (i+1) * 2145
+    let expected_0 = 1.0 * 2145.0; // (0+1) * 2145
+    let expected_1 = 2.0 * 2145.0; // (1+1) * 2145
+    assert!(result[0] != 0.0, "result[0] should be nonzero, got 0.0");
+    assert!((result[0] - expected_0).abs() < 1e-6, "result[0] = {}, expected {}", result[0], expected_0);
+    assert!((result[1] - expected_1).abs() < 1e-6, "result[1] = {}, expected {}", result[1], expected_1);
+}
+
+#[test]
+fn test_convert_power_chain_65_mem() {
+    // Test the EGM08 power scaling chain: convert i64→f64 indices, then power(scalar, indices).
+    // This is: %49 = convert [0,1,...,N-1] : i64→f64, %50 = broadcast(base), %51 = power(%50,%49)
+    // Expected: [base^0, base^1, ..., base^(N-1)] = [1.0, base, base^2, ...]
+    let mlir = r#"
+module @module {
+  func.func public @main(%arg0: tensor<f64>) -> tensor<65xf64> {
+    %0 = call @inner(%arg0) : (tensor<f64>) -> tensor<65xf64>
+    return %0 : tensor<65xf64>
+  }
+  func.func private @inner(%arg0: tensor<f64>) -> tensor<65xf64> {
+    %c = stablehlo.constant dense<[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64]> : tensor<65xi64>
+    %1 = stablehlo.convert %c : (tensor<65xi64>) -> tensor<65xf64>
+    %2 = stablehlo.broadcast_in_dim %arg0, dims = [] : (tensor<f64>) -> tensor<65xf64>
+    %3 = stablehlo.power %2, %1 : tensor<65xf64>
+    return %3 : tensor<65xf64>
+  }
+}
+"#;
+    let base_val = 0.5f64;
+    let input = f64_buf(&[base_val]);
+    let out = run_mlir_mem(mlir, &[&input], &[65 * 8]);
+    let result = read_f64s(&out[0]);
+    // result[n] = 0.5^n
+    assert!((result[0] - 1.0).abs() < 1e-10, "result[0] = {}, expected 1.0 (0.5^0)", result[0]);
+    assert!((result[1] - 0.5).abs() < 1e-10, "result[1] = {}, expected 0.5 (0.5^1)", result[1]);
+    assert!((result[2] - 0.25).abs() < 1e-10, "result[2] = {}, expected 0.25 (0.5^2)", result[2]);
+    assert!((result[10] - base_val.powi(10)).abs() < 1e-10, "result[10] = {}, expected {}", result[10], base_val.powi(10));
+}
+
+#[test]
+fn test_gather_nd_row_from_diagonal_matrix_mem() {
+    // Reproduces the cube-sat gravity bug: gather row 0 from a diagonal-like matrix
+    // using 2D indices. Row 0 of a diagonal matrix should have only element [0] nonzero.
+    // The bug: gather_nd returns an alternating pattern instead.
+    let mlir = r#"
+module @module {
+  func.func public @main(%arg0: tensor<5x5xf64>, %arg1: tensor<5x2xi32>) -> tensor<5x1x1xf64> {
+    %0 = "stablehlo.gather"(%arg0, %arg1) <{dimension_numbers = #stablehlo.gather<offset_dims = [1, 2], start_index_map = [0, 1], index_vector_dim = 1>, indices_are_sorted = false, slice_sizes = array<i64: 1, 1>}> : (tensor<5x5xf64>, tensor<5x2xi32>) -> tensor<5x1x1xf64>
+    return %0 : tensor<5x1x1xf64>
+  }
+}
+"#;
+    // Diagonal matrix: [[10,0,0,0,0],[0,20,0,0,0],[0,0,30,0,0],[0,0,0,40,0],[0,0,0,0,50]]
+    let mat = f64_buf(&[
+        10.0, 0.0, 0.0, 0.0, 0.0,
+         0.0,20.0, 0.0, 0.0, 0.0,
+         0.0, 0.0,30.0, 0.0, 0.0,
+         0.0, 0.0, 0.0,40.0, 0.0,
+         0.0, 0.0, 0.0, 0.0,50.0,
+    ]);
+    // Indices: pick elements (0,0), (0,1), (0,2), (0,3), (0,4) -- entire row 0
+    let idx = i32_buf(&[0,0, 0,1, 0,2, 0,3, 0,4]);
+    let out = run_mlir_mem(mlir, &[&mat, &idx], &[5 * 8]);
+    let result = read_f64s(&out[0]);
+    // Row 0 of diagonal matrix: [10, 0, 0, 0, 0]
+    assert_f64s_close(&result, &[10.0, 0.0, 0.0, 0.0, 0.0]);
+}
+
+#[test]
+fn test_gather_nd_65x65_from_while_loop_callee_mem() {
+    // Exact cube-sat pattern: pointer-ABI @outer calls @inner which has a while loop.
+    // Each iteration calls @helper (pointer-ABI) which does N-D gather from a 65x65 matrix
+    // passed as a loop-carried value. The gather picks a single row using 2D indices.
+    // BUG REPRODUCER: if the gather returns wrong values from the loop-carried matrix,
+    // the result will have the alternating [1,0,1,0,...] pattern instead of [1,0,0,0,...].
+    let mlir = r#"
+module @module {
+  func.func public @main(%arg0: tensor<65x65xf64>) -> tensor<65xf64> {
+    %0 = call @outer(%arg0) : (tensor<65x65xf64>) -> tensor<65xf64>
+    return %0 : tensor<65xf64>
+  }
+  func.func private @outer(%arg0: tensor<65x65xf64>) -> tensor<65xf64> {
+    %c0 = stablehlo.constant dense<0> : tensor<i64>
+    %init = stablehlo.constant dense<0.000000e+00> : tensor<f64>
+    %init_vec = stablehlo.broadcast_in_dim %init, dims = [] : (tensor<f64>) -> tensor<65xf64>
+    %loop:3 = stablehlo.while(%iterArg_0 = %c0, %iterArg_1 = %arg0, %iterArg_2 = %init_vec) : tensor<i64>, tensor<65x65xf64>, tensor<65xf64>
+    cond {
+      %c1 = stablehlo.constant dense<1> : tensor<i64>
+      %cmp = stablehlo.compare LT, %iterArg_0, %c1, SIGNED : (tensor<i64>, tensor<i64>) -> tensor<i1>
+      stablehlo.return %cmp : tensor<i1>
+    } do {
+      %result = call @helper(%iterArg_1, %iterArg_0) : (tensor<65x65xf64>, tensor<i64>) -> tensor<65xf64>
+      %c1 = stablehlo.constant dense<1> : tensor<i64>
+      %next = stablehlo.add %iterArg_0, %c1 : tensor<i64>
+      stablehlo.return %next, %iterArg_1, %result : tensor<i64>, tensor<65x65xf64>, tensor<65xf64>
+    }
+    return %loop#2 : tensor<65xf64>
+  }
+  func.func private @helper(%arg0: tensor<65x65xf64>, %arg1: tensor<i64>) -> tensor<65xf64> {
+    %indices_base = stablehlo.constant dense<[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64]> : tensor<65xi64>
+    %row_idx = stablehlo.convert %arg1 : (tensor<i64>) -> tensor<i32>
+    %col_idx = stablehlo.convert %indices_base : (tensor<65xi64>) -> tensor<65xi32>
+    %c_neg = stablehlo.constant dense<0> : tensor<i32>
+    %neg_check = stablehlo.compare LT, %row_idx, %c_neg, SIGNED : (tensor<i32>, tensor<i32>) -> tensor<i1>
+    %c_65 = stablehlo.constant dense<65> : tensor<i32>
+    %wrapped = stablehlo.add %row_idx, %c_65 : tensor<i32>
+    %safe_row = stablehlo.select %neg_check, %wrapped, %row_idx : tensor<i1>, tensor<i32>
+    %row_bc = stablehlo.broadcast_in_dim %safe_row, dims = [] : (tensor<i32>) -> tensor<65x1xi32>
+    %col_bc = stablehlo.broadcast_in_dim %col_idx, dims = [0] : (tensor<65xi32>) -> tensor<65x1xi32>
+    %idx_2d = stablehlo.concatenate %row_bc, %col_bc, dim = 1 : (tensor<65x1xi32>, tensor<65x1xi32>) -> tensor<65x2xi32>
+    %gathered = "stablehlo.gather"(%arg0, %idx_2d) <{dimension_numbers = #stablehlo.gather<offset_dims = [1, 2], start_index_map = [0, 1], index_vector_dim = 1>, indices_are_sorted = false, slice_sizes = array<i64: 1, 1>}> : (tensor<65x65xf64>, tensor<65x2xi32>) -> tensor<65x1x1xf64>
+    %result = stablehlo.reshape %gathered : (tensor<65x1x1xf64>) -> tensor<65xf64>
+    return %result : tensor<65xf64>
+  }
+}
+"#;
+    // Diagonal matrix: only position [0][0] = 1.0, everything else = 0
+    let mut mat = vec![0.0f64; 65 * 65];
+    mat[0] = 1.0; // [0][0]
+    let m_buf = f64_buf(&mat);
+    let out = run_mlir_mem(mlir, &[&m_buf], &[65 * 8]);
+    let result = read_f64s(&out[0]);
+    // After 1 iteration: helper gathers row 0 = [1, 0, 0, ..., 0]
+    let nz: Vec<usize> = result.iter().enumerate().filter(|&(_, v)| *v != 0.0).map(|(i, _)| i).collect();
+    eprintln!("result nonzero positions: {:?}", nz);
+    eprintln!("result[0..5] = {:?}", &result[..5]);
+    assert!(nz.len() == 1 && nz[0] == 0,
+        "BUG: expected 1 nonzero at [0], got {} nonzero at {:?}\nresult[0..10]={:?}", nz.len(), nz, &result[..10]);
+}
+
+#[test]
+fn test_multi_function_65x65_force_chain_mem() {
+    // Replicates inner_375's exact force chain pattern:
+    // @main calls @gravity (pointer-ABI) which:
+    // 1. Calls @roll_vec (pointer-ABI helper) to roll a 65-element vector
+    // 2. Scatters zero at position 0
+    // 3. Broadcasts the rolled vector to 65x65
+    // 4. Multiplies with a 65x65 coefficient matrix (passed as input)
+    // 5. Reduces to scalar
+    //
+    // The roll+scatter pattern shifts column 0 to column 64 and zeros column 0.
+    // For an identity coefficient matrix, the expected result is the sum of ALL
+    // columns EXCEPT column 0, each multiplied by the rolled vector value.
+    let mlir = r#"
+module @module {
+  func.func public @main(%arg0: tensor<65xf64>, %arg1: tensor<65x65xf64>) -> tensor<f64> {
+    %0 = call @gravity(%arg0, %arg1) : (tensor<65xf64>, tensor<65x65xf64>) -> tensor<f64>
+    return %0 : tensor<f64>
+  }
+  func.func private @gravity(%arg0: tensor<65xf64>, %arg1: tensor<65x65xf64>) -> tensor<f64> {
+    %rolled = call @roll_vec(%arg0) : (tensor<65xf64>) -> tensor<65xf64>
+    %c0 = stablehlo.constant dense<0> : tensor<1xi32>
+    %zero = stablehlo.constant dense<0.000000e+00> : tensor<f64>
+    %scattered = "stablehlo.scatter"(%rolled, %c0, %zero) <{indices_are_sorted = true, scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0], scatter_dims_to_operand_dims = [0]>, unique_indices = true}> ({
+    ^bb0(%arg2: tensor<f64>, %arg3: tensor<f64>):
+      stablehlo.return %arg3 : tensor<f64>
+    }) : (tensor<65xf64>, tensor<1xi32>, tensor<f64>) -> tensor<65xf64>
+    %bcast = stablehlo.broadcast_in_dim %scattered, dims = [1] : (tensor<65xf64>) -> tensor<1x65xf64>
+    %bcast2 = stablehlo.broadcast_in_dim %bcast, dims = [0, 1] : (tensor<1x65xf64>) -> tensor<65x65xf64>
+    %product = stablehlo.multiply %arg1, %bcast2 : tensor<65x65xf64>
+    %cst_z = stablehlo.constant dense<0.0> : tensor<f64>
+    %row_sums = stablehlo.reduce(%product init: %cst_z) applies stablehlo.add across dimensions = [1] : (tensor<65x65xf64>, tensor<f64>) -> tensor<65xf64>
+    %total = stablehlo.reduce(%row_sums init: %cst_z) applies stablehlo.add across dimensions = [0] : (tensor<65xf64>, tensor<f64>) -> tensor<f64>
+    return %total : tensor<f64>
+  }
+  func.func private @roll_vec(%arg0: tensor<65xf64>) -> tensor<65xf64> {
+    %0 = stablehlo.slice %arg0 [1:65] : (tensor<65xf64>) -> tensor<64xf64>
+    %1 = stablehlo.slice %arg0 [0:1] : (tensor<65xf64>) -> tensor<1xf64>
+    %2 = stablehlo.concatenate %0, %1, dim = 0 : (tensor<64xf64>, tensor<1xf64>) -> tensor<65xf64>
+    return %2 : tensor<65xf64>
+  }
+}
+"#;
+    // Input vector: [100, 200, 300, ..., 6500]
+    let vec_in: Vec<f64> = (1..=65).map(|i| i as f64 * 100.0).collect();
+    // Coefficient matrix: identity
+    let mut coeff = vec![0.0f64; 65 * 65];
+    for i in 0..65 { coeff[i * 65 + i] = 1.0; }
+
+    let v_buf: Vec<u8> = vec_in.iter().flat_map(|v| v.to_le_bytes()).collect();
+    let c_buf: Vec<u8> = coeff.iter().flat_map(|v| v.to_le_bytes()).collect();
+    let module = cranelift_mlir::parser::parse_module(mlir).expect("parse failed");
+    let compiled = cranelift_mlir::lower::compile_module(&module).expect("compile failed");
+    type TickFn = unsafe extern "C" fn(*const *const u8, *mut *mut u8);
+    let tick_fn: TickFn = unsafe { std::mem::transmute(compiled.get_main_fn()) };
+
+    let input_ptrs: Vec<*const u8> = vec![v_buf.as_ptr(), c_buf.as_ptr()];
+    let mut out_buf = vec![0u8; 8];
+    let mut output_ptrs: Vec<*mut u8> = vec![out_buf.as_mut_ptr()];
+    unsafe { tick_fn(input_ptrs.as_ptr(), output_ptrs.as_mut_ptr()) };
+    let result = f64::from_le_bytes(out_buf[..8].try_into().unwrap());
+
+    // After roll left: [200, 300, ..., 6500, 100]
+    // After scatter zero at idx 0: [0, 300, 400, ..., 6500, 100]
+    // Broadcast to 65x65: each row = [0, 300, 400, ..., 6500, 100]
+    // Multiply by identity: product[i][i] = scattered[i]
+    // Row sums: [0, 300, 400, ..., 6500, 100]
+    // Total = sum of scattered = 0 + 300 + 400 + ... + 6500 + 100
+    //       = (sum of 100..6500 step 100) - 100 - 200 + 100
+    //       = 65*66/2*100 - 200 = 214500 - 200 = 214300
+    let expected = 65.0 * 66.0 / 2.0 * 100.0 - 200.0;
+    assert!(
+        (result - expected).abs() < 1e-6,
+        "result = {result}, expected {expected}"
+    );
+}
+
+#[test]
+fn test_full_egm08_chain_65_mem() {
+    // Full EGM08-like chain inside a pointer-ABI function:
+    // 1. Constant i64 index vector [0,...,64]
+    // 2. Roll left, scatter zero, convert back and forth
+    // 3. Power scaling
+    // 4. Coefficient matrix multiply
+    // 5. Reduce
+    // This is the exact pattern from inner_375's force computation.
+    let mlir = r#"
+module @module {
+  func.func public @main(%arg0: tensor<f64>, %arg1: tensor<65x65xf64>) -> tensor<f64> {
+    %0 = call @chain(%arg0, %arg1) : (tensor<f64>, tensor<65x65xf64>) -> tensor<f64>
+    return %0 : tensor<f64>
+  }
+  func.func private @chain(%arg0: tensor<f64>, %arg1: tensor<65x65xf64>) -> tensor<f64> {
+    %c = stablehlo.constant dense<[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64]> : tensor<65xi64>
+
+    %indices_f = stablehlo.convert %c : (tensor<65xi64>) -> tensor<65xf64>
+    %base_bc = stablehlo.broadcast_in_dim %arg0, dims = [] : (tensor<f64>) -> tensor<65xf64>
+    %powers = stablehlo.power %base_bc, %indices_f : tensor<65xf64>
+
+    %scale = stablehlo.broadcast_in_dim %powers, dims = [1] : (tensor<65xf64>) -> tensor<1x65xf64>
+    %scale_2d = stablehlo.broadcast_in_dim %scale, dims = [0, 1] : (tensor<1x65xf64>) -> tensor<65x65xf64>
+
+    %product = stablehlo.multiply %scale_2d, %arg1 : tensor<65x65xf64>
+
+    %cst_z = stablehlo.constant dense<0.0> : tensor<f64>
+    %row_sums = stablehlo.reduce(%product init: %cst_z) applies stablehlo.add across dimensions = [1] : (tensor<65x65xf64>, tensor<f64>) -> tensor<65xf64>
+    %total = stablehlo.reduce(%row_sums init: %cst_z) applies stablehlo.add across dimensions = [0] : (tensor<65xf64>, tensor<f64>) -> tensor<f64>
+    return %total : tensor<f64>
+  }
+}
+"#;
+    // base = 1.0 (all powers = 1.0), coefficient matrix = identity
+    // product = identity * broadcast(1.0) = identity
+    // row_sums = [1,1,...,1], total = 65
+    let base = f64_buf(&[1.0]);
+    let mut coeff = vec![0.0f64; 65 * 65];
+    for i in 0..65 { coeff[i * 65 + i] = 1.0; }
+    let c_buf = f64_buf(&coeff);
+    let out = run_mlir_mem(mlir, &[&base, &c_buf], &[8]);
+    let result = read_f64s(&out[0]);
+    assert!((result[0] - 65.0).abs() < 1e-6, "result = {}, expected 65.0", result[0]);
+}
