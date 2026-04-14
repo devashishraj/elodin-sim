@@ -2962,3 +2962,48 @@ module @module {
     let out = run_mlir(mlir, &[&input], &[4]);
     assert_eq!(out[0], vec![1, 0, 1, 0]);
 }
+
+#[test]
+fn test_gather_3d_pivot_permute() {
+    // Pattern A: 3D pivot gather from _lu_solve_207
+    // Permutes along dimension 1 of a 3D tensor based on pivot indices
+    let mlir = r#"
+module @module {
+  func.func public @main(%arg0: tensor<2x3x1xf64>, %arg1: tensor<3x1xi32>) -> tensor<2x3x1xf64> {
+    %0 = "stablehlo.gather"(%arg0, %arg1) <{dimension_numbers = #stablehlo.gather<offset_dims = [0, 2], collapsed_slice_dims = [1], start_index_map = [1], index_vector_dim = 1>, indices_are_sorted = false, slice_sizes = array<i64: 2, 1, 1>}> : (tensor<2x3x1xf64>, tensor<3x1xi32>) -> tensor<2x3x1xf64>
+    return %0 : tensor<2x3x1xf64>
+  }
+}
+"#;
+    // operand (2x3x1): [[10],[20],[30]] and [[40],[50],[60]]
+    // indices (3x1): [[2],[0],[1]] -> permute dim 1: row2,row0,row1
+    // expected: [[30],[10],[20]] and [[60],[40],[50]]
+    let operand = f64_buf(&[10.0, 20.0, 30.0, 40.0, 50.0, 60.0]);
+    let indices: Vec<u8> = vec![2, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0]; // 3 x i32 LE
+    let out = run_mlir(mlir, &[&operand, &indices], &[48]);
+    let result = read_f64s(&out[0]);
+    assert_f64s_close(&result, &[30.0, 10.0, 20.0, 60.0, 40.0, 50.0]);
+}
+
+#[test]
+fn test_gather_diagonal_2d_multiindex() {
+    // Pattern B: 2D multi-index gather for diagonal extraction
+    let mlir = r#"
+module @module {
+  func.func public @main(%arg0: tensor<3x3xf64>) -> tensor<3xf64> {
+    %0 = stablehlo.iota dim = 0 : tensor<3xi32>
+    %1 = stablehlo.broadcast_in_dim %0, dims = [0] : (tensor<3xi32>) -> tensor<3x1xi32>
+    %2 = stablehlo.broadcast_in_dim %0, dims = [0] : (tensor<3xi32>) -> tensor<3x1xi32>
+    %3 = stablehlo.concatenate %1, %2, dim = 1 : (tensor<3x1xi32>, tensor<3x1xi32>) -> tensor<3x2xi32>
+    %4 = "stablehlo.gather"(%arg0, %3) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0, 1], start_index_map = [0, 1], index_vector_dim = 1>, indices_are_sorted = false, slice_sizes = array<i64: 1, 1>}> : (tensor<3x3xf64>, tensor<3x2xi32>) -> tensor<3xf64>
+    return %4 : tensor<3xf64>
+  }
+}
+"#;
+    // Matrix: [[1,2,3],[4,5,6],[7,8,9]]
+    // Diagonal indices: (0,0),(1,1),(2,2) -> [1, 5, 9]
+    let matrix = f64_buf(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]);
+    let out = run_mlir(mlir, &[&matrix], &[24]);
+    let result = read_f64s(&out[0]);
+    assert_f64s_close(&result, &[1.0, 5.0, 9.0]);
+}

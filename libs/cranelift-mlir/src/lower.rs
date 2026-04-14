@@ -3357,11 +3357,16 @@ fn lower_instruction(
             let vals = get_vals(value_map, operand)?.clone();
             let idx_vals = get_vals(value_map, indices)?.clone();
             let src_ty = type_map.get(operand).cloned().unwrap_or(rt.clone());
+            let idx_ty = type_map
+                .get(indices)
+                .cloned()
+                .unwrap_or(TensorType::scalar(ElementType::I32));
             Ok(vec![lower_gather(
                 builder,
                 &vals,
                 &idx_vals,
                 &src_ty,
+                &idx_ty,
                 &rt,
                 dims,
                 slice_sizes,
@@ -4578,6 +4583,7 @@ fn lower_gather(
     operand: &[Value],
     indices: &[Value],
     src_ty: &TensorType,
+    idx_ty: &TensorType,
     out_ty: &TensorType,
     dims: &GatherDims,
     slice_sizes: &[i64],
@@ -4591,19 +4597,21 @@ fn lower_gather(
         return vec![make_zero(builder, et); n];
     }
 
-    // Row-select gather: start_index_map=[0], collapsed_slice_dims=[0],
-    // offset_dims=[1], slice_sizes=[1, row_len].
-    // Each index selects a full row from the operand.
-    let row_len = if src_ty.shape.len() >= 2 {
-        src_ty.shape.last().copied().unwrap_or(1) as usize
-    } else {
-        1
-    };
-    let n_batch = if !dims.collapsed_slice_dims.is_empty() && slice_sizes.len() >= 2 {
-        n / row_len.max(1)
-    } else {
-        indices.len()
-    };
+    let src_shape: Vec<usize> = src_ty.shape.iter().map(|&d| d as usize).collect();
+    let src_rank = src_shape.len();
+    let out_shape: Vec<usize> = out_ty.shape.iter().map(|&d| d as usize).collect();
+    let out_rank = out_shape.len();
+    let idx_shape: Vec<usize> = idx_ty.shape.iter().map(|&d| d as usize).collect();
+    let index_vector_dim = dims.index_vector_dim as usize;
+
+    let mut src_strides = vec![1usize; src_rank];
+    for i in (0..src_rank.saturating_sub(1)).rev() {
+        src_strides[i] = src_strides[i + 1] * src_shape[i + 1];
+    }
+    let mut idx_strides = vec![1usize; idx_shape.len()];
+    for i in (0..idx_shape.len().saturating_sub(1)).rev() {
+        idx_strides[i] = idx_strides[i + 1] * idx_shape[i + 1];
+    }
 
     let total_bytes = operand.len() * elem_sz;
     let ss = builder.create_sized_stack_slot(StackSlotData::new(
@@ -4618,34 +4626,143 @@ fn lower_gather(
             .store(MemFlags::trusted(), v, base, (i * elem_sz) as i32);
     }
 
+    // Batch dims of the indices tensor = all dims except index_vector_dim
+    let idx_rank = idx_shape.len();
+    let batch_dims: Vec<usize> = (0..idx_rank).filter(|&d| d != index_vector_dim).collect();
+    let index_depth = if index_vector_dim < idx_rank {
+        idx_shape[index_vector_dim]
+    } else {
+        1
+    };
+
+    // Batch shape = indices shape with index_vector_dim removed
+    let batch_shape: Vec<usize> = batch_dims.iter().map(|&d| idx_shape[d]).collect();
+    let n_batch: usize = batch_shape.iter().product::<usize>().max(1);
+    let batch_rank = batch_shape.len();
+
+    // Offset shape = slice_sizes with collapsed dims removed
+    let offset_shape: Vec<usize> = (0..src_rank)
+        .filter(|d| !dims.collapsed_slice_dims.contains(&(*d as i64)))
+        .map(|d| slice_sizes[d] as usize)
+        .collect();
+    let offset_rank = offset_shape.len();
+    let n_offset: usize = offset_shape.iter().product::<usize>().max(1);
+
     let mut results = Vec::with_capacity(n);
-    for b in 0..n_batch {
-        let raw_idx = if b < indices.len() {
-            indices[b]
-        } else {
-            indices[0]
-        };
-        let idx_i64 = if builder.func.dfg.value_type(raw_idx) == types::I64 {
-            raw_idx
-        } else if builder.func.dfg.value_type(raw_idx).bytes() < 8 {
-            builder.ins().uextend(types::I64, raw_idx)
-        } else {
-            raw_idx
-        };
-        let row_byte_offset = builder.ins().imul_imm(idx_i64, (row_len * elem_sz) as i64);
-        let row_addr = builder.ins().iadd(base, row_byte_offset);
-        for col in 0..row_len {
-            let v = builder
-                .ins()
-                .load(ct, MemFlags::trusted(), row_addr, (col * elem_sz) as i32);
-            results.push(v);
+
+    for flat_out in 0..n {
+        // Decompose flat output index into multi-index
+        let mut out_indices = vec![0usize; out_rank];
+        {
+            let mut rem = flat_out;
+            for d in (0..out_rank).rev() {
+                if out_shape[d] > 0 {
+                    out_indices[d] = rem % out_shape[d];
+                    rem /= out_shape[d];
+                }
+            }
         }
+
+        // Split output indices into batch part and offset part
+        let mut batch_idx = vec![0usize; batch_rank];
+        let mut offset_idx = vec![0usize; offset_rank];
+        let offset_dims = &dims.offset_dims;
+        let mut bi = 0;
+        let mut oi = 0;
+        for d in 0..out_rank {
+            if offset_dims.contains(&(d as i64)) {
+                if oi < offset_rank {
+                    offset_idx[oi] = out_indices[d];
+                    oi += 1;
+                }
+            } else {
+                if bi < batch_rank {
+                    batch_idx[bi] = out_indices[d];
+                    bi += 1;
+                }
+            }
+        }
+
+        // Look up start indices from the indices tensor
+        let mut start_index = vec![0usize; index_depth];
+        for k in 0..index_depth {
+            // Build the multi-index into the indices tensor
+            let mut idx_multi = vec![0usize; idx_rank];
+            let mut b = 0;
+            for d in 0..idx_rank {
+                if d == index_vector_dim {
+                    idx_multi[d] = k;
+                } else {
+                    if b < batch_rank {
+                        idx_multi[d] = batch_idx[b];
+                    }
+                    b += 1;
+                }
+            }
+            let mut flat_idx = 0;
+            for d in 0..idx_rank {
+                flat_idx += idx_multi[d] * idx_strides[d];
+            }
+            // Read the index value at compile time from the SSA value
+            // (will be resolved at runtime via stack load)
+            start_index[k] = flat_idx;
+        }
+
+        // Build source multi-index
+        let mut src_idx = vec![0usize; src_rank];
+
+        // Place start indices via start_index_map (runtime values)
+        // Place offset indices into non-collapsed dims
+        let mut oi2 = 0;
+        for d in 0..src_rank {
+            if dims.collapsed_slice_dims.contains(&(d as i64)) {
+                // This dim is collapsed; its source index comes from start_index_map
+            } else {
+                if oi2 < offset_rank {
+                    src_idx[d] = offset_idx[oi2];
+                    oi2 += 1;
+                }
+            }
+        }
+
+        // The start_index values are RUNTIME (SSA) values from the indices tensor.
+        // We need to compute the source address dynamically.
+        // Static part: offset contribution to flat index
+        let mut static_offset = 0usize;
+        for d in 0..src_rank {
+            if !dims.collapsed_slice_dims.contains(&(d as i64)) {
+                static_offset += src_idx[d] * src_strides[d];
+            }
+        }
+
+        // Dynamic part: start_index contributions
+        // For each k in start_index_map, add indices[start_index[k]] * src_strides[start_index_map[k]]
+        let static_byte_off = (static_offset * elem_sz) as i32;
+        let mut addr = builder.ins().iadd_imm(base, static_byte_off as i64);
+
+        for (k, &mapped_dim) in dims.start_index_map.iter().enumerate() {
+            if k >= index_depth {
+                break;
+            }
+            let flat_idx = start_index[k];
+            if flat_idx >= indices.len() {
+                continue;
+            }
+            let raw_idx = indices[flat_idx];
+            let idx_i64 = if builder.func.dfg.value_type(raw_idx) == types::I64 {
+                raw_idx
+            } else {
+                builder.ins().sextend(types::I64, raw_idx)
+            };
+            let stride_bytes = (src_strides[mapped_dim as usize] * elem_sz) as i64;
+            let byte_off = builder.ins().imul_imm(idx_i64, stride_bytes);
+            addr = builder.ins().iadd(addr, byte_off);
+        }
+
+        let v = builder.ins().load(ct, MemFlags::trusted(), addr, 0);
+        results.push(v);
     }
 
-    while results.len() < n {
-        results.push(make_zero(builder, et));
-    }
-    results.truncate(n);
     results
 }
 

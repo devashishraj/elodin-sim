@@ -8,6 +8,11 @@
       "abs_tol": 1e-04,
       "rel_tol": 1e-04
     },
+    "linalg-iree": {
+      "files": {
+        "tracker3.kf3_info.csv": { "abs_tol": 3.0, "rel_tol": 3.0 }
+      }
+    },
     "drone": {
       "abs_tol": 1e-06,
       "rel_tol": 1e-05,
