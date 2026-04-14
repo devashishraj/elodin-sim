@@ -393,9 +393,13 @@ fn parse_op(
         });
     }
     if input.starts_with("stablehlo.round_nearest_even") {
-        return parse_unary_op(input, ctx, result_names, "stablehlo.round_nearest_even", |o| {
-            Instruction::RoundNearestEven { operand: o }
-        });
+        return parse_unary_op(
+            input,
+            ctx,
+            result_names,
+            "stablehlo.round_nearest_even",
+            |o| Instruction::RoundNearestEven { operand: o },
+        );
     }
     if input.starts_with("chlo.erf_inv") {
         return parse_unary_op(input, ctx, result_names, "chlo.erf_inv", |o| {
@@ -1249,7 +1253,11 @@ fn parse_scatter_op(
         }
     }
 
-    let values = make_values(ctx, result_names, vec![TensorType::scalar(ElementType::F64)]);
+    let values = make_values(
+        ctx,
+        result_names,
+        vec![TensorType::scalar(ElementType::F64)],
+    );
     Ok(Some(InstrResult {
         values,
         instr: Instruction::Scatter {
@@ -1301,9 +1309,7 @@ fn parse_custom_call_op(
     if let Some(after_arrow) = ty_str.rfind("-> ") {
         let result_part = &ty_str[after_arrow + 3..];
         if result_part.starts_with('(') {
-            let inner = result_part
-                .trim_start_matches('(')
-                .trim_end_matches(')');
+            let inner = result_part.trim_start_matches('(').trim_end_matches(')');
             for part in inner.split(", tensor<") {
                 let part = if part.starts_with("tensor<") {
                     part.to_string()

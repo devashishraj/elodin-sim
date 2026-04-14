@@ -11,7 +11,9 @@ fn read_f64s(buf: &[u8]) -> Vec<f64> {
 
 fn extract_func<'a>(mlir: &'a str, name: &str) -> &'a str {
     let search = format!("func.func private @{name}(");
-    let start = mlir.find(&search).unwrap_or_else(|| panic!("function @{name} not found"));
+    let start = mlir
+        .find(&search)
+        .unwrap_or_else(|| panic!("function @{name} not found"));
     let body = &mlir[start..];
     let end = body.find("\n  }").unwrap() + 4;
     &mlir[start..start + end]
@@ -26,11 +28,20 @@ fn test_chained_noise_calls() {
 
     let deps = [
         "inner_147",
-        "_threefry_fold_in", "_normal", "_normal_real", "_uniform",
-        "threefry2x32", "threefry2x32_169",
-        "closed_call_158", "closed_call_173",
+        "_threefry_fold_in",
+        "_normal",
+        "_normal_real",
+        "_uniform",
+        "threefry2x32",
+        "threefry2x32_169",
+        "closed_call_158",
+        "closed_call_173",
     ];
-    let funcs: String = deps.iter().map(|n| extract_func(full_mlir, n)).collect::<Vec<_>>().join("\n");
+    let funcs: String = deps
+        .iter()
+        .map(|n| extract_func(full_mlir, n))
+        .collect::<Vec<_>>()
+        .join("\n");
 
     // Call inner_147 twice: first with (T, bias), then with (T+1, result_of_first)
     let mlir = format!(
@@ -60,7 +71,9 @@ fn test_chained_noise_calls() {
     let mut out_second = vec![0u8; 24];
     let mut out_ptrs = [out_first.as_mut_ptr(), out_second.as_mut_ptr()];
 
-    unsafe { tick_fn(input_ptrs.as_ptr(), out_ptrs.as_mut_ptr()); }
+    unsafe {
+        tick_fn(input_ptrs.as_ptr(), out_ptrs.as_mut_ptr());
+    }
 
     let first = read_f64s(&out_first);
     let second = read_f64s(&out_second);
@@ -85,7 +98,9 @@ fn test_chained_noise_calls() {
     // Call 1: tick=0, bias
     let mut out_s1 = vec![0u8; 24];
     let mut out_ptr_s1 = [out_s1.as_mut_ptr()];
-    unsafe { fn_s(input_ptrs.as_ptr(), out_ptr_s1.as_mut_ptr()); }
+    unsafe {
+        fn_s(input_ptrs.as_ptr(), out_ptr_s1.as_mut_ptr());
+    }
     let sep_first = read_f64s(&out_s1);
 
     // Call 2: tick=1, result of call 1
@@ -94,15 +109,21 @@ fn test_chained_noise_calls() {
     let input_ptrs2 = [tick2_buf.as_ptr(), out_s1.as_ptr()];
     let mut out_s2 = vec![0u8; 24];
     let mut out_ptr_s2 = [out_s2.as_mut_ptr()];
-    unsafe { fn_s(input_ptrs2.as_ptr(), out_ptr_s2.as_mut_ptr()); }
+    unsafe {
+        fn_s(input_ptrs2.as_ptr(), out_ptr_s2.as_mut_ptr());
+    }
     let sep_second = read_f64s(&out_s2);
 
     eprintln!("separate call 1 (tick=0): {:?}", sep_first);
-    eprintln!("separate call 2 (tick=1, input=sep_first): {:?}", sep_second);
+    eprintln!(
+        "separate call 2 (tick=1, input=sep_first): {:?}",
+        sep_second
+    );
 
     // Chained and separate should be identical
     assert_eq!(first, sep_first, "first call should match");
-    assert_eq!(second, sep_second,
+    assert_eq!(
+        second, sep_second,
         "chained second call differs from separate!\n  chained: {:?}\n  separate: {:?}",
         second, sep_second
     );
@@ -115,12 +136,22 @@ fn test_sret_does_not_corrupt_earlier_values() {
     let full_mlir = include_str!("../testdata/drone.stablehlo.mlir");
 
     let deps = [
-        "inner_147", "inner_189",
-        "_threefry_fold_in", "_normal", "_normal_real", "_uniform",
-        "threefry2x32", "threefry2x32_169",
-        "closed_call_158", "closed_call_173",
+        "inner_147",
+        "inner_189",
+        "_threefry_fold_in",
+        "_normal",
+        "_normal_real",
+        "_uniform",
+        "threefry2x32",
+        "threefry2x32_169",
+        "closed_call_158",
+        "closed_call_173",
     ];
-    let funcs: String = deps.iter().map(|n| extract_func(full_mlir, n)).collect::<Vec<_>>().join("\n");
+    let funcs: String = deps
+        .iter()
+        .map(|n| extract_func(full_mlir, n))
+        .collect::<Vec<_>>()
+        .join("\n");
 
     // Main: call inner_147, then inner_189 (sret), then return inner_147's output
     // and also call inner_147 again with tick+1 and inner_147's output
@@ -157,13 +188,26 @@ fn test_sret_does_not_corrupt_earlier_values() {
     let md_buf: Vec<u8> = motor_dirs.iter().flat_map(|v| v.to_le_bytes()).collect();
     let gb_buf: Vec<u8> = gyro_bias.iter().flat_map(|v| v.to_le_bytes()).collect();
 
-    let input_ptrs = [tick_buf.as_ptr(), bias_buf.as_ptr(), wp_buf.as_ptr(), f_buf.as_ptr(), md_buf.as_ptr(), gb_buf.as_ptr()];
+    let input_ptrs = [
+        tick_buf.as_ptr(),
+        bias_buf.as_ptr(),
+        wp_buf.as_ptr(),
+        f_buf.as_ptr(),
+        md_buf.as_ptr(),
+        gb_buf.as_ptr(),
+    ];
     let mut out_noise = vec![0u8; 24];
     let mut out_sret_1 = vec![0u8; 24];
     let mut out_second = vec![0u8; 24];
-    let mut out_ptrs = [out_noise.as_mut_ptr(), out_sret_1.as_mut_ptr(), out_second.as_mut_ptr()];
+    let mut out_ptrs = [
+        out_noise.as_mut_ptr(),
+        out_sret_1.as_mut_ptr(),
+        out_second.as_mut_ptr(),
+    ];
 
-    unsafe { tick_fn(input_ptrs.as_ptr(), out_ptrs.as_mut_ptr()); }
+    unsafe {
+        tick_fn(input_ptrs.as_ptr(), out_ptrs.as_mut_ptr());
+    }
 
     let noise = read_f64s(&out_noise);
     let second = read_f64s(&out_second);
@@ -191,7 +235,9 @@ fn test_sret_does_not_corrupt_earlier_values() {
     let mut out_second_ns = vec![0u8; 24];
     let mut out_ptrs_ns = [out_noise_ns.as_mut_ptr(), out_second_ns.as_mut_ptr()];
 
-    unsafe { fn_ns(input_ptrs_ns.as_ptr(), out_ptrs_ns.as_mut_ptr()); }
+    unsafe {
+        fn_ns(input_ptrs_ns.as_ptr(), out_ptrs_ns.as_mut_ptr());
+    }
 
     let noise_ns = read_f64s(&out_noise_ns);
     let second_ns = read_f64s(&out_second_ns);
@@ -203,8 +249,12 @@ fn test_sret_does_not_corrupt_earlier_values() {
     eprintln!("  noise: {:?}", noise_ns);
     eprintln!("  second: {:?}", second_ns);
 
-    assert_eq!(noise, noise_ns, "first call should match regardless of sret");
-    assert_eq!(second, second_ns,
+    assert_eq!(
+        noise, noise_ns,
+        "first call should match regardless of sret"
+    );
+    assert_eq!(
+        second, second_ns,
         "sret call corrupted earlier values!\n  with_sret: {:?}\n  without: {:?}",
         second, second_ns
     );
@@ -224,8 +274,8 @@ fn test_full_main_vs_standalone_inner_236() {
     // Prepare all-zero inputs (same as initial world state)
     // arg sizes from the main signature
     let arg_sizes: Vec<usize> = vec![
-        8, 8, 24, 32, 24, 56, 24, 24, 72, 32, 32, 48, 56, 48, 24, 32, 32, 32, 48, 48,
-        8, 24, 96, 96, 24, 24, 8, 24, 24, 24, 32,
+        8, 8, 24, 32, 24, 56, 24, 24, 72, 32, 32, 48, 56, 48, 24, 32, 32, 32, 48, 48, 8, 24, 96,
+        96, 24, 24, 8, 24, 24, 24, 32,
     ];
     let mut input_bufs: Vec<Vec<u8>> = arg_sizes.iter().map(|&sz| vec![0u8; sz]).collect();
 
@@ -239,7 +289,9 @@ fn test_full_main_vs_standalone_inner_236() {
 
     // Set arg12 (tensor<7xf64>): initial inertia
     let arg12_hex = "0612143fc6dcb53f60764f1e166abd3f9ca223b9fc87c43f0000000000000000000000000000000000000000000000000000000000000000";
-    let arg12_bytes: Vec<u8> = (0..arg12_hex.len()/2).map(|i| u8::from_str_radix(&arg12_hex[i*2..i*2+2], 16).unwrap()).collect();
+    let arg12_bytes: Vec<u8> = (0..arg12_hex.len() / 2)
+        .map(|i| u8::from_str_radix(&arg12_hex[i * 2..i * 2 + 2], 16).unwrap())
+        .collect();
     let copy_len = arg12_bytes.len().min(input_bufs[12].len());
     input_bufs[12][..copy_len].copy_from_slice(&arg12_bytes[..copy_len]);
 
@@ -258,13 +310,15 @@ fn test_full_main_vs_standalone_inner_236() {
 
     // Output buffers: 31 outputs, need sizes from return types
     let out_sizes: Vec<usize> = vec![
-        48, 24, 8, 24, 24, 24, 8, 8, 72, 32, 24, 32, 24, 24, 32, 48, 32, 96, 24, 96,
-        56, 24, 32, 56, 48, 48, 24, 24, 32, 32, 8,
+        48, 24, 8, 24, 24, 24, 8, 8, 72, 32, 24, 32, 24, 24, 32, 48, 32, 96, 24, 96, 56, 24, 32,
+        56, 48, 48, 24, 24, 32, 32, 8,
     ];
     let mut output_bufs: Vec<Vec<u8>> = out_sizes.iter().map(|&sz| vec![0u8; sz]).collect();
     let mut output_ptrs: Vec<*mut u8> = output_bufs.iter_mut().map(|b| b.as_mut_ptr()).collect();
 
-    unsafe { full_fn(input_ptrs.as_ptr(), output_ptrs.as_mut_ptr()); }
+    unsafe {
+        full_fn(input_ptrs.as_ptr(), output_ptrs.as_mut_ptr());
+    }
 
     // Read output[12] = gyro_bias (tensor<3xf64>)
     let gyro_bias = read_f64s(&output_bufs[12]);
@@ -277,11 +331,20 @@ fn test_full_main_vs_standalone_inner_236() {
     // inner_146 adds 1, so %633 = 1
     let deps = [
         "inner_147",
-        "_threefry_fold_in", "_normal", "_normal_real", "_uniform",
-        "threefry2x32", "threefry2x32_169",
-        "closed_call_158", "closed_call_173",
+        "_threefry_fold_in",
+        "_normal",
+        "_normal_real",
+        "_uniform",
+        "threefry2x32",
+        "threefry2x32_169",
+        "closed_call_158",
+        "closed_call_173",
     ];
-    let funcs: String = deps.iter().map(|n| extract_func(full_mlir, n)).collect::<Vec<_>>().join("\n");
+    let funcs: String = deps
+        .iter()
+        .map(|n| extract_func(full_mlir, n))
+        .collect::<Vec<_>>()
+        .join("\n");
     let standalone_mlir = format!(
         r#"module @module {{
   func.func public @main(%arg0: tensor<i64>, %arg1: tensor<3xf64>) -> tensor<3xf64> {{
@@ -301,7 +364,9 @@ fn test_full_main_vs_standalone_inner_236() {
     let sa_input_ptrs = [tick_buf.as_ptr(), gb_bytes.as_ptr()];
     let mut sa_out = vec![0u8; 24];
     let mut sa_out_ptrs = [sa_out.as_mut_ptr()];
-    unsafe { sa_fn(sa_input_ptrs.as_ptr(), sa_out_ptrs.as_mut_ptr()); }
+    unsafe {
+        sa_fn(sa_input_ptrs.as_ptr(), sa_out_ptrs.as_mut_ptr());
+    }
 
     let sa_result = read_f64s(&sa_out);
     eprintln!("Standalone inner_147(tick=1, bias): {:?}", sa_result);
@@ -313,7 +378,6 @@ fn test_full_main_vs_standalone_inner_236() {
     // Check what output[6] is (sensor_tick output = %0 = arg0+1 = 1)
     let out6 = i64::from_le_bytes(output_bufs[6][..8].try_into().unwrap());
     eprintln!("Full main output[6] (tick counter): {}", out6);
-
 }
 
 /// Test: compile truncated main (first 648 lines, returns %634 = inner_147 output)
@@ -329,8 +393,8 @@ fn test_truncated_main_inner147_output() {
 
     // Same inputs as the full main test
     let arg_sizes: Vec<usize> = vec![
-        8, 8, 24, 32, 24, 56, 24, 24, 72, 32, 32, 48, 56, 48, 24, 32, 32, 32, 48, 48,
-        8, 24, 96, 96, 24, 24, 8, 24, 24, 24, 32,
+        8, 8, 24, 32, 24, 56, 24, 24, 72, 32, 32, 48, 56, 48, 24, 32, 32, 32, 48, 48, 8, 24, 96,
+        96, 24, 24, 8, 24, 24, 24, 32,
     ];
     let mut input_bufs: Vec<Vec<u8>> = arg_sizes.iter().map(|&sz| vec![0u8; sz]).collect();
     input_bufs[5][24..32].copy_from_slice(&1.0f64.to_le_bytes());
@@ -340,7 +404,9 @@ fn test_truncated_main_inner147_output() {
     input_bufs[21].copy_from_slice(&gb_bytes);
     input_bufs[26].copy_from_slice(&1.0f64.to_le_bytes());
     let arg12_hex = "0612143fc6dcb53f60764f1e166abd3f9ca223b9fc87c43f0000000000000000000000000000000000000000000000000000000000000000";
-    let arg12_bytes: Vec<u8> = (0..arg12_hex.len()/2).map(|i| u8::from_str_radix(&arg12_hex[i*2..i*2+2], 16).unwrap()).collect();
+    let arg12_bytes: Vec<u8> = (0..arg12_hex.len() / 2)
+        .map(|i| u8::from_str_radix(&arg12_hex[i * 2..i * 2 + 2], 16).unwrap())
+        .collect();
     let copy_len = arg12_bytes.len().min(input_bufs[12].len());
     input_bufs[12][..copy_len].copy_from_slice(&arg12_bytes[..copy_len]);
 
@@ -348,18 +414,29 @@ fn test_truncated_main_inner147_output() {
     let mut out = vec![0u8; 24];
     let mut out_ptrs = [out.as_mut_ptr()];
 
-    unsafe { trunc_fn(input_ptrs.as_ptr(), out_ptrs.as_mut_ptr()); }
+    unsafe {
+        trunc_fn(input_ptrs.as_ptr(), out_ptrs.as_mut_ptr());
+    }
     let trunc_result = read_f64s(&out);
 
     // Compare with standalone inner_147(tick=1, bias)
     let full_mlir = include_str!("../testdata/drone.stablehlo.mlir");
     let deps = [
         "inner_147",
-        "_threefry_fold_in", "_normal", "_normal_real", "_uniform",
-        "threefry2x32", "threefry2x32_169",
-        "closed_call_158", "closed_call_173",
+        "_threefry_fold_in",
+        "_normal",
+        "_normal_real",
+        "_uniform",
+        "threefry2x32",
+        "threefry2x32_169",
+        "closed_call_158",
+        "closed_call_173",
     ];
-    let funcs: String = deps.iter().map(|n| extract_func(full_mlir, n)).collect::<Vec<_>>().join("\n");
+    let funcs: String = deps
+        .iter()
+        .map(|n| extract_func(full_mlir, n))
+        .collect::<Vec<_>>()
+        .join("\n");
     let sa_mlir = format!(
         r#"module @module {{
   func.func public @main(%arg0: tensor<i64>, %arg1: tensor<3xf64>) -> tensor<3xf64> {{
@@ -378,19 +455,31 @@ fn test_truncated_main_inner147_output() {
     let sa_input_ptrs = [tick_buf.as_ptr(), gb_bytes.as_ptr()];
     let mut sa_out = vec![0u8; 24];
     let mut sa_out_ptrs = [sa_out.as_mut_ptr()];
-    unsafe { sa_fn(sa_input_ptrs.as_ptr(), sa_out_ptrs.as_mut_ptr()); }
+    unsafe {
+        sa_fn(sa_input_ptrs.as_ptr(), sa_out_ptrs.as_mut_ptr());
+    }
     let sa_result = read_f64s(&sa_out);
 
-    eprintln!("Truncated main (648 lines, returns %%634): {:?}", trunc_result);
-    eprintln!("Standalone inner_147(tick=1, bias):         {:?}", sa_result);
+    eprintln!(
+        "Truncated main (648 lines, returns %%634): {:?}",
+        trunc_result
+    );
+    eprintln!(
+        "Standalone inner_147(tick=1, bias):         {:?}",
+        sa_result
+    );
 
     for i in 0..3 {
         let diff = (trunc_result[i] - sa_result[i]).abs();
-        eprintln!("  [{}] trunc={:.17e} standalone={:.17e} diff={:.3e}", i, trunc_result[i], sa_result[i], diff);
+        eprintln!(
+            "  [{}] trunc={:.17e} standalone={:.17e} diff={:.3e}",
+            i, trunc_result[i], sa_result[i], diff
+        );
         assert!(
             diff < 1e-15,
             "Truncated main produces different inner_147 output than standalone!\n  truncated: {:?}\n  standalone: {:?}",
-            trunc_result, sa_result
+            trunc_result,
+            sa_result
         );
     }
 }
@@ -408,8 +497,8 @@ fn test_truncated_main_inner222_output() {
     let trunc_fn: TickFn = unsafe { std::mem::transmute(compiled.get_main_fn()) };
 
     let arg_sizes: Vec<usize> = vec![
-        8, 8, 24, 32, 24, 56, 24, 24, 72, 32, 32, 48, 56, 48, 24, 32, 32, 32, 48, 48,
-        8, 24, 96, 96, 24, 24, 8, 24, 24, 24, 32,
+        8, 8, 24, 32, 24, 56, 24, 24, 72, 32, 32, 48, 56, 48, 24, 32, 32, 32, 48, 48, 8, 24, 96,
+        96, 24, 24, 8, 24, 24, 24, 32,
     ];
     let mut input_bufs: Vec<Vec<u8>> = arg_sizes.iter().map(|&sz| vec![0u8; sz]).collect();
     input_bufs[5][24..32].copy_from_slice(&1.0f64.to_le_bytes());
@@ -423,9 +512,15 @@ fn test_truncated_main_inner222_output() {
     let mut out_634 = vec![0u8; 24];
     let mut out_1268 = vec![0u8; 24];
     let mut out_1267 = vec![0u8; 8];
-    let mut out_ptrs = [out_634.as_mut_ptr(), out_1268.as_mut_ptr(), out_1267.as_mut_ptr()];
+    let mut out_ptrs = [
+        out_634.as_mut_ptr(),
+        out_1268.as_mut_ptr(),
+        out_1267.as_mut_ptr(),
+    ];
 
-    unsafe { trunc_fn(input_ptrs.as_ptr(), out_ptrs.as_mut_ptr()); }
+    unsafe {
+        trunc_fn(input_ptrs.as_ptr(), out_ptrs.as_mut_ptr());
+    }
 
     let val_634 = read_f64s(&out_634);
     let val_1268 = read_f64s(&out_1268);
@@ -440,11 +535,20 @@ fn test_truncated_main_inner222_output() {
     let full_mlir = include_str!("../testdata/drone.stablehlo.mlir");
     let deps = [
         "inner_222",
-        "_threefry_fold_in", "_normal", "_normal_real", "_uniform",
-        "threefry2x32", "threefry2x32_169",
-        "closed_call_158", "closed_call_173",
+        "_threefry_fold_in",
+        "_normal",
+        "_normal_real",
+        "_uniform",
+        "threefry2x32",
+        "threefry2x32_169",
+        "closed_call_158",
+        "closed_call_173",
     ];
-    let funcs: String = deps.iter().map(|n| extract_func(full_mlir, n)).collect::<Vec<_>>().join("\n");
+    let funcs: String = deps
+        .iter()
+        .map(|n| extract_func(full_mlir, n))
+        .collect::<Vec<_>>()
+        .join("\n");
     let sa_mlir = format!(
         r#"module @module {{
   func.func public @main(%arg0: tensor<i64>, %arg1: tensor<3xf64>) -> tensor<3xf64> {{
@@ -463,15 +567,23 @@ fn test_truncated_main_inner222_output() {
     let sa_input_ptrs = [tick_buf.as_ptr(), bias_buf.as_ptr()];
     let mut sa_out = vec![0u8; 24];
     let mut sa_out_ptrs = [sa_out.as_mut_ptr()];
-    unsafe { sa_fn(sa_input_ptrs.as_ptr(), sa_out_ptrs.as_mut_ptr()); }
+    unsafe {
+        sa_fn(sa_input_ptrs.as_ptr(), sa_out_ptrs.as_mut_ptr());
+    }
     let sa_result = read_f64s(&sa_out);
 
-    eprintln!("Standalone inner_222(tick={}, bias={:?}): {:?}", val_1267, val_634, sa_result);
+    eprintln!(
+        "Standalone inner_222(tick={}, bias={:?}): {:?}",
+        val_1267, val_634, sa_result
+    );
 
     // Compare
     for i in 0..3 {
         let diff = (val_1268[i] - sa_result[i]).abs();
-        eprintln!("  [{}] trunc={:.17e} standalone={:.17e} diff={:.3e}", i, val_1268[i], sa_result[i], diff);
+        eprintln!(
+            "  [{}] trunc={:.17e} standalone={:.17e} diff={:.3e}",
+            i, val_1268[i], sa_result[i], diff
+        );
     }
     assert_eq!(
         out_1268, sa_out,
@@ -491,8 +603,8 @@ fn test_truncated_main_inner236_output() {
     let trunc_fn: TickFn = unsafe { std::mem::transmute(compiled.get_main_fn()) };
 
     let arg_sizes: Vec<usize> = vec![
-        8, 8, 24, 32, 24, 56, 24, 24, 72, 32, 32, 48, 56, 48, 24, 32, 32, 32, 48, 48,
-        8, 24, 96, 96, 24, 24, 8, 24, 24, 24, 32,
+        8, 8, 24, 32, 24, 56, 24, 24, 72, 32, 32, 48, 56, 48, 24, 32, 32, 32, 48, 48, 8, 24, 96,
+        96, 24, 24, 8, 24, 24, 24, 32,
     ];
     let mut input_bufs: Vec<Vec<u8>> = arg_sizes.iter().map(|&sz| vec![0u8; sz]).collect();
     input_bufs[5][24..32].copy_from_slice(&1.0f64.to_le_bytes());
@@ -507,9 +619,16 @@ fn test_truncated_main_inner236_output() {
     let mut out_1268 = vec![0u8; 24];
     let mut out_1902 = vec![0u8; 24];
     let mut out_1901 = vec![0u8; 8];
-    let mut out_ptrs = [out_634.as_mut_ptr(), out_1268.as_mut_ptr(), out_1902.as_mut_ptr(), out_1901.as_mut_ptr()];
+    let mut out_ptrs = [
+        out_634.as_mut_ptr(),
+        out_1268.as_mut_ptr(),
+        out_1902.as_mut_ptr(),
+        out_1901.as_mut_ptr(),
+    ];
 
-    unsafe { trunc_fn(input_ptrs.as_ptr(), out_ptrs.as_mut_ptr()); }
+    unsafe {
+        trunc_fn(input_ptrs.as_ptr(), out_ptrs.as_mut_ptr());
+    }
 
     let val_634 = read_f64s(&out_634);
     let val_1268 = read_f64s(&out_1268);
@@ -526,11 +645,20 @@ fn test_truncated_main_inner236_output() {
     let full_mlir = include_str!("../testdata/drone.stablehlo.mlir");
     let deps = [
         "inner_236",
-        "_threefry_fold_in", "_normal", "_normal_real", "_uniform",
-        "threefry2x32", "threefry2x32_169",
-        "closed_call_158", "closed_call_173",
+        "_threefry_fold_in",
+        "_normal",
+        "_normal_real",
+        "_uniform",
+        "threefry2x32",
+        "threefry2x32_169",
+        "closed_call_158",
+        "closed_call_173",
     ];
-    let funcs: String = deps.iter().map(|n| extract_func(full_mlir, n)).collect::<Vec<_>>().join("\n");
+    let funcs: String = deps
+        .iter()
+        .map(|n| extract_func(full_mlir, n))
+        .collect::<Vec<_>>()
+        .join("\n");
     let sa_mlir = format!(
         r#"module @module {{
   func.func public @main(%arg0: tensor<i64>, %arg1: tensor<3xf64>) -> tensor<3xf64> {{
@@ -548,14 +676,22 @@ fn test_truncated_main_inner236_output() {
     let sa_input_ptrs = [tick_buf.as_ptr(), out_1268.as_ptr()];
     let mut sa_out = vec![0u8; 24];
     let mut sa_out_ptrs = [sa_out.as_mut_ptr()];
-    unsafe { sa_fn(sa_input_ptrs.as_ptr(), sa_out_ptrs.as_mut_ptr()); }
+    unsafe {
+        sa_fn(sa_input_ptrs.as_ptr(), sa_out_ptrs.as_mut_ptr());
+    }
     let sa_result = read_f64s(&sa_out);
 
-    eprintln!("Standalone inner_236(tick={}, bias={:?}): {:?}", val_1901, val_1268, sa_result);
+    eprintln!(
+        "Standalone inner_236(tick={}, bias={:?}): {:?}",
+        val_1901, val_1268, sa_result
+    );
 
     for i in 0..3 {
         let diff = (val_1902[i] - sa_result[i]).abs();
-        eprintln!("  [{}] trunc={:.17e} standalone={:.17e} diff={:.3e}", i, val_1902[i], sa_result[i], diff);
+        eprintln!(
+            "  [{}] trunc={:.17e} standalone={:.17e} diff={:.3e}",
+            i, val_1902[i], sa_result[i], diff
+        );
     }
     assert_eq!(
         out_1902, sa_out,
@@ -563,4 +699,3 @@ fn test_truncated_main_inner236_output() {
         val_1902, sa_result
     );
 }
-

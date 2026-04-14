@@ -10,9 +10,10 @@ use cranelift_codegen::isa::CallConv;
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_jit::{JITBuilder, JITModule};
-use cranelift_module::{FuncId, Linkage, Module};
+use cranelift_module::{DataDescription, FuncId, Linkage, Module};
 
 use crate::ir::*;
+use crate::tensor_rt;
 
 pub struct CompiledModule {
     module: JITModule,
@@ -25,9 +26,79 @@ impl CompiledModule {
     }
 }
 
+#[derive(Default, Clone, Copy)]
+pub struct CompileConfig {
+    pub force_pointer_abi_main: bool,
+}
+
 type TensorVals = Vec<Value>;
 
 const MAX_REG_RETURNS: usize = 8;
+const LARGE_TENSOR_THRESHOLD: usize = 64;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FuncAbi {
+    Scalar,
+    Pointer,
+}
+
+fn classify_function(func_def: &FuncDef) -> FuncAbi {
+    if func_def.name == "main" {
+        return FuncAbi::Scalar;
+    }
+    let param_max = func_def
+        .params
+        .iter()
+        .map(|(_, t)| t.num_elements())
+        .max()
+        .unwrap_or(0);
+    let ret_max = func_def
+        .result_types
+        .iter()
+        .map(|t| t.num_elements())
+        .max()
+        .unwrap_or(0);
+    let body_max = scan_body_max_elements(&func_def.body);
+    if param_max.max(ret_max).max(body_max) > LARGE_TENSOR_THRESHOLD {
+        FuncAbi::Pointer
+    } else {
+        FuncAbi::Scalar
+    }
+}
+
+fn scan_body_max_elements(body: &[InstrResult]) -> usize {
+    let mut max_elem = 0usize;
+    for ir in body {
+        for (_, ty) in &ir.values {
+            max_elem = max_elem.max(ty.num_elements());
+        }
+        match &ir.instr {
+            Instruction::While {
+                cond_body,
+                loop_body,
+                ..
+            } => {
+                max_elem = max_elem.max(scan_body_max_elements(cond_body));
+                max_elem = max_elem.max(scan_body_max_elements(loop_body));
+            }
+            Instruction::Case { branches, .. } => {
+                for branch in branches {
+                    max_elem = max_elem.max(scan_body_max_elements(branch));
+                }
+            }
+            _ => {}
+        }
+    }
+    max_elem
+}
+
+fn classify_all_functions(ir_module: &crate::ir::Module) -> HashMap<String, FuncAbi> {
+    ir_module
+        .functions
+        .iter()
+        .map(|f| (f.name.clone(), classify_function(f)))
+        .collect()
+}
 
 fn cranelift_type_for(et: ElementType) -> Type {
     match et {
@@ -302,10 +373,456 @@ fn declare_libm_functions(
 }
 
 // ---------------------------------------------------------------------------
+// Tensor runtime function IDs
+// ---------------------------------------------------------------------------
+
+#[allow(dead_code)]
+struct TensorRtIds {
+    add_f64: FuncId,
+    sub_f64: FuncId,
+    mul_f64: FuncId,
+    div_f64: FuncId,
+    max_f64: FuncId,
+    min_f64: FuncId,
+    pow_f64: FuncId,
+    rem_f64: FuncId,
+    neg_f64: FuncId,
+    sqrt_f64: FuncId,
+    abs_f64: FuncId,
+    floor_f64: FuncId,
+    sin_f64: FuncId,
+    cos_f64: FuncId,
+    exp_f64: FuncId,
+    log_f64: FuncId,
+    tanh_f64: FuncId,
+    sign_f64: FuncId,
+    tan_f64: FuncId,
+    transpose_nd_f64: FuncId,
+    cmp_eq_f64: FuncId,
+    cmp_lt_f64: FuncId,
+    cmp_le_f64: FuncId,
+    cmp_gt_f64: FuncId,
+    cmp_ge_f64: FuncId,
+    cmp_ne_f64: FuncId,
+    cmp_eq_i64: FuncId,
+    cmp_lt_i64: FuncId,
+    select_f64: FuncId,
+    select_i64: FuncId,
+    convert_i64_to_f64: FuncId,
+    convert_f64_to_i64: FuncId,
+    convert_i1_to_f64: FuncId,
+    broadcast_f64: FuncId,
+    broadcast_i64: FuncId,
+    broadcast_nd_f64: FuncId,
+    memcpy: FuncId,
+    transpose_f64: FuncId,
+    reduce_sum_f64: FuncId,
+    reduce_max_f64: FuncId,
+    reduce_min_f64: FuncId,
+    scatter_f64: FuncId,
+    gather_f64: FuncId,
+    matmul_f64: FuncId,
+    slice_f64: FuncId,
+    pad_f64: FuncId,
+    concat_nd_f64: FuncId,
+    dynamic_slice_f64: FuncId,
+    dynamic_update_slice_f64: FuncId,
+    iota_nd_i64: FuncId,
+    iota_nd_f64: FuncId,
+    add_i64: FuncId,
+    sub_i64: FuncId,
+    mul_i64: FuncId,
+    widen_i32_to_i64: FuncId,
+    convert_i64_to_i32: FuncId,
+    select_i32: FuncId,
+    broadcast_i32: FuncId,
+    add_i32: FuncId,
+    sub_i32: FuncId,
+    div_i32: FuncId,
+    div_ui32: FuncId,
+    cmp_lt_i32: FuncId,
+    convert_f64_to_i32: FuncId,
+    convert_i1_to_i32: FuncId,
+    convert_i32_to_f64: FuncId,
+    convert_f64_to_f32: FuncId,
+    convert_f32_to_f64: FuncId,
+}
+
+fn register_tensor_rt_symbols(jit_builder: &mut JITBuilder) {
+    jit_builder.symbol("__trt_add_f64", tensor_rt::tensor_add_f64 as *const u8);
+    jit_builder.symbol("__trt_sub_f64", tensor_rt::tensor_sub_f64 as *const u8);
+    jit_builder.symbol("__trt_mul_f64", tensor_rt::tensor_mul_f64 as *const u8);
+    jit_builder.symbol("__trt_div_f64", tensor_rt::tensor_div_f64 as *const u8);
+    jit_builder.symbol("__trt_max_f64", tensor_rt::tensor_max_f64 as *const u8);
+    jit_builder.symbol("__trt_min_f64", tensor_rt::tensor_min_f64 as *const u8);
+    jit_builder.symbol("__trt_pow_f64", tensor_rt::tensor_pow_f64 as *const u8);
+    jit_builder.symbol("__trt_rem_f64", tensor_rt::tensor_rem_f64 as *const u8);
+    jit_builder.symbol("__trt_neg_f64", tensor_rt::tensor_neg_f64 as *const u8);
+    jit_builder.symbol("__trt_sqrt_f64", tensor_rt::tensor_sqrt_f64 as *const u8);
+    jit_builder.symbol("__trt_abs_f64", tensor_rt::tensor_abs_f64 as *const u8);
+    jit_builder.symbol("__trt_floor_f64", tensor_rt::tensor_floor_f64 as *const u8);
+    jit_builder.symbol("__trt_sin_f64", tensor_rt::tensor_sin_f64 as *const u8);
+    jit_builder.symbol("__trt_cos_f64", tensor_rt::tensor_cos_f64 as *const u8);
+    jit_builder.symbol("__trt_exp_f64", tensor_rt::tensor_exp_f64 as *const u8);
+    jit_builder.symbol("__trt_log_f64", tensor_rt::tensor_log_f64 as *const u8);
+    jit_builder.symbol("__trt_sign_f64", tensor_rt::tensor_sign_f64 as *const u8);
+    jit_builder.symbol("__trt_tan_f64", tensor_rt::tensor_tan_f64 as *const u8);
+    jit_builder.symbol(
+        "__trt_transpose_nd_f64",
+        tensor_rt::tensor_transpose_nd_f64 as *const u8,
+    );
+    jit_builder.symbol("__trt_tanh_f64", tensor_rt::tensor_tanh_f64 as *const u8);
+    jit_builder.symbol(
+        "__trt_cmp_eq_f64",
+        tensor_rt::tensor_cmp_eq_f64 as *const u8,
+    );
+    jit_builder.symbol(
+        "__trt_cmp_lt_f64",
+        tensor_rt::tensor_cmp_lt_f64 as *const u8,
+    );
+    jit_builder.symbol(
+        "__trt_cmp_le_f64",
+        tensor_rt::tensor_cmp_le_f64 as *const u8,
+    );
+    jit_builder.symbol(
+        "__trt_cmp_gt_f64",
+        tensor_rt::tensor_cmp_gt_f64 as *const u8,
+    );
+    jit_builder.symbol(
+        "__trt_cmp_ge_f64",
+        tensor_rt::tensor_cmp_ge_f64 as *const u8,
+    );
+    jit_builder.symbol(
+        "__trt_cmp_ne_f64",
+        tensor_rt::tensor_cmp_ne_f64 as *const u8,
+    );
+    jit_builder.symbol(
+        "__trt_cmp_eq_i64",
+        tensor_rt::tensor_cmp_eq_i64 as *const u8,
+    );
+    jit_builder.symbol(
+        "__trt_cmp_lt_i64",
+        tensor_rt::tensor_cmp_lt_i64 as *const u8,
+    );
+    jit_builder.symbol(
+        "__trt_select_f64",
+        tensor_rt::tensor_select_f64 as *const u8,
+    );
+    jit_builder.symbol(
+        "__trt_select_i64",
+        tensor_rt::tensor_select_i64 as *const u8,
+    );
+    jit_builder.symbol(
+        "__trt_cvt_i64_f64",
+        tensor_rt::tensor_convert_i64_to_f64 as *const u8,
+    );
+    jit_builder.symbol(
+        "__trt_cvt_f64_i64",
+        tensor_rt::tensor_convert_f64_to_i64 as *const u8,
+    );
+    jit_builder.symbol(
+        "__trt_cvt_i1_f64",
+        tensor_rt::tensor_convert_i1_to_f64 as *const u8,
+    );
+    jit_builder.symbol(
+        "__trt_bcast_f64",
+        tensor_rt::tensor_broadcast_f64 as *const u8,
+    );
+    jit_builder.symbol(
+        "__trt_bcast_i64",
+        tensor_rt::tensor_broadcast_i64 as *const u8,
+    );
+    jit_builder.symbol(
+        "__trt_bcast_nd_f64",
+        tensor_rt::tensor_broadcast_nd_f64 as *const u8,
+    );
+    jit_builder.symbol("__trt_memcpy", tensor_rt::tensor_memcpy as *const u8);
+    jit_builder.symbol(
+        "__trt_transpose_f64",
+        tensor_rt::tensor_transpose_f64 as *const u8,
+    );
+    jit_builder.symbol(
+        "__trt_reduce_sum_f64",
+        tensor_rt::tensor_reduce_sum_f64 as *const u8,
+    );
+    jit_builder.symbol(
+        "__trt_reduce_max_f64",
+        tensor_rt::tensor_reduce_max_f64 as *const u8,
+    );
+    jit_builder.symbol(
+        "__trt_reduce_min_f64",
+        tensor_rt::tensor_reduce_min_f64 as *const u8,
+    );
+    jit_builder.symbol(
+        "__trt_scatter_f64",
+        tensor_rt::tensor_scatter_f64 as *const u8,
+    );
+    jit_builder.symbol(
+        "__trt_gather_f64",
+        tensor_rt::tensor_gather_f64 as *const u8,
+    );
+    jit_builder.symbol(
+        "__trt_matmul_f64",
+        tensor_rt::tensor_matmul_f64 as *const u8,
+    );
+    jit_builder.symbol("__trt_slice_f64", tensor_rt::tensor_slice_f64 as *const u8);
+    jit_builder.symbol("__trt_pad_f64", tensor_rt::tensor_pad_f64 as *const u8);
+    jit_builder.symbol(
+        "__trt_concat_nd_f64",
+        tensor_rt::tensor_concat_nd_f64 as *const u8,
+    );
+    jit_builder.symbol(
+        "__trt_dyn_slice_f64",
+        tensor_rt::tensor_dynamic_slice_f64 as *const u8,
+    );
+    jit_builder.symbol(
+        "__trt_dyn_upd_slice_f64",
+        tensor_rt::tensor_dynamic_update_slice_f64 as *const u8,
+    );
+    jit_builder.symbol(
+        "__trt_iota_nd_i64",
+        tensor_rt::tensor_iota_nd_i64 as *const u8,
+    );
+    jit_builder.symbol(
+        "__trt_iota_nd_f64",
+        tensor_rt::tensor_iota_nd_f64 as *const u8,
+    );
+    jit_builder.symbol("__trt_add_i64", tensor_rt::tensor_add_i64 as *const u8);
+    jit_builder.symbol("__trt_sub_i64", tensor_rt::tensor_sub_i64 as *const u8);
+    jit_builder.symbol("__trt_mul_i64", tensor_rt::tensor_mul_i64 as *const u8);
+    jit_builder.symbol(
+        "__trt_select_i32",
+        tensor_rt::tensor_select_i32 as *const u8,
+    );
+    jit_builder.symbol(
+        "__trt_bcast_i32",
+        tensor_rt::tensor_broadcast_i32 as *const u8,
+    );
+    jit_builder.symbol("__trt_add_i32", tensor_rt::tensor_add_i32 as *const u8);
+    jit_builder.symbol(
+        "__trt_widen_i32_i64",
+        tensor_rt::tensor_widen_i32_to_i64 as *const u8,
+    );
+    jit_builder.symbol(
+        "__trt_cvt_i64_i32",
+        tensor_rt::tensor_convert_i64_to_i32 as *const u8,
+    );
+    jit_builder.symbol("__trt_sub_i32", tensor_rt::tensor_sub_i32 as *const u8);
+    jit_builder.symbol("__trt_div_i32", tensor_rt::tensor_div_i32 as *const u8);
+    jit_builder.symbol("__trt_div_ui32", tensor_rt::tensor_div_ui32 as *const u8);
+    jit_builder.symbol(
+        "__trt_cmp_lt_i32",
+        tensor_rt::tensor_cmp_lt_i32 as *const u8,
+    );
+    jit_builder.symbol(
+        "__trt_cvt_f64_i32",
+        tensor_rt::tensor_convert_f64_to_i32 as *const u8,
+    );
+    jit_builder.symbol(
+        "__trt_cvt_i1_i32",
+        tensor_rt::tensor_convert_i1_to_i32 as *const u8,
+    );
+    jit_builder.symbol(
+        "__trt_cvt_i32_f64",
+        tensor_rt::tensor_convert_i32_to_f64 as *const u8,
+    );
+    jit_builder.symbol(
+        "__trt_cvt_f64_f32",
+        tensor_rt::tensor_convert_f64_to_f32 as *const u8,
+    );
+    jit_builder.symbol(
+        "__trt_cvt_f32_f64",
+        tensor_rt::tensor_convert_f32_to_f64 as *const u8,
+    );
+}
+
+fn declare_tensor_rt_functions(
+    jit_module: &mut JITModule,
+    call_conv: CallConv,
+) -> Result<TensorRtIds, String> {
+    let pt = ptr_type();
+    let i64t = types::I64;
+    let f64t = types::F64;
+    let decl =
+        |m: &mut JITModule, name: &str, params: &[Type], rets: &[Type]| -> Result<FuncId, String> {
+            let mut sig = m.make_signature();
+            sig.call_conv = call_conv;
+            for &t in params {
+                sig.params.push(AbiParam::new(t));
+            }
+            for &t in rets {
+                sig.returns.push(AbiParam::new(t));
+            }
+            m.declare_function(name, Linkage::Import, &sig)
+                .map_err(|e| format!("declare trt {name}: {e}"))
+        };
+    let binop = |m: &mut JITModule, n: &str| decl(m, n, &[pt, pt, pt, i64t], &[]);
+    let unop = |m: &mut JITModule, n: &str| decl(m, n, &[pt, pt, i64t], &[]);
+    let cmp = |m: &mut JITModule, n: &str| decl(m, n, &[pt, pt, pt, i64t], &[]);
+    Ok(TensorRtIds {
+        add_f64: binop(jit_module, "__trt_add_f64")?,
+        sub_f64: binop(jit_module, "__trt_sub_f64")?,
+        mul_f64: binop(jit_module, "__trt_mul_f64")?,
+        div_f64: binop(jit_module, "__trt_div_f64")?,
+        max_f64: binop(jit_module, "__trt_max_f64")?,
+        min_f64: binop(jit_module, "__trt_min_f64")?,
+        pow_f64: binop(jit_module, "__trt_pow_f64")?,
+        rem_f64: binop(jit_module, "__trt_rem_f64")?,
+        neg_f64: unop(jit_module, "__trt_neg_f64")?,
+        sqrt_f64: unop(jit_module, "__trt_sqrt_f64")?,
+        abs_f64: unop(jit_module, "__trt_abs_f64")?,
+        floor_f64: unop(jit_module, "__trt_floor_f64")?,
+        sin_f64: unop(jit_module, "__trt_sin_f64")?,
+        cos_f64: unop(jit_module, "__trt_cos_f64")?,
+        exp_f64: unop(jit_module, "__trt_exp_f64")?,
+        log_f64: unop(jit_module, "__trt_log_f64")?,
+        tanh_f64: unop(jit_module, "__trt_tanh_f64")?,
+        sign_f64: unop(jit_module, "__trt_sign_f64")?,
+        tan_f64: unop(jit_module, "__trt_tan_f64")?,
+        transpose_nd_f64: decl(
+            jit_module,
+            "__trt_transpose_nd_f64",
+            &[pt, pt, i64t, pt, pt, i64t],
+            &[],
+        )?,
+        cmp_eq_f64: cmp(jit_module, "__trt_cmp_eq_f64")?,
+        cmp_lt_f64: cmp(jit_module, "__trt_cmp_lt_f64")?,
+        cmp_le_f64: cmp(jit_module, "__trt_cmp_le_f64")?,
+        cmp_gt_f64: cmp(jit_module, "__trt_cmp_gt_f64")?,
+        cmp_ge_f64: cmp(jit_module, "__trt_cmp_ge_f64")?,
+        cmp_ne_f64: cmp(jit_module, "__trt_cmp_ne_f64")?,
+        cmp_eq_i64: cmp(jit_module, "__trt_cmp_eq_i64")?,
+        cmp_lt_i64: cmp(jit_module, "__trt_cmp_lt_i64")?,
+        select_f64: decl(jit_module, "__trt_select_f64", &[pt, pt, pt, pt, i64t], &[])?,
+        select_i64: decl(jit_module, "__trt_select_i64", &[pt, pt, pt, pt, i64t], &[])?,
+        convert_i64_to_f64: unop(jit_module, "__trt_cvt_i64_f64")?,
+        convert_f64_to_i64: unop(jit_module, "__trt_cvt_f64_i64")?,
+        convert_i1_to_f64: unop(jit_module, "__trt_cvt_i1_f64")?,
+        broadcast_f64: decl(jit_module, "__trt_bcast_f64", &[pt, f64t, i64t], &[])?,
+        broadcast_i64: decl(jit_module, "__trt_bcast_i64", &[pt, i64t, i64t], &[])?,
+        broadcast_nd_f64: decl(
+            jit_module,
+            "__trt_bcast_nd_f64",
+            &[pt, pt, i64t, i64t, pt, i64t, pt, i64t, pt],
+            &[],
+        )?,
+        memcpy: decl(jit_module, "__trt_memcpy", &[pt, pt, i64t], &[])?,
+        transpose_f64: decl(
+            jit_module,
+            "__trt_transpose_f64",
+            &[pt, pt, i64t, i64t],
+            &[],
+        )?,
+        reduce_sum_f64: decl(
+            jit_module,
+            "__trt_reduce_sum_f64",
+            &[pt, pt, i64t, i64t],
+            &[],
+        )?,
+        reduce_max_f64: decl(
+            jit_module,
+            "__trt_reduce_max_f64",
+            &[pt, pt, i64t, i64t],
+            &[],
+        )?,
+        reduce_min_f64: decl(
+            jit_module,
+            "__trt_reduce_min_f64",
+            &[pt, pt, i64t, i64t],
+            &[],
+        )?,
+        scatter_f64: decl(
+            jit_module,
+            "__trt_scatter_f64",
+            &[pt, pt, i64t, pt, pt, i64t, i64t],
+            &[],
+        )?,
+        gather_f64: decl(
+            jit_module,
+            "__trt_gather_f64",
+            &[pt, pt, i64t, pt, i64t, i64t],
+            &[],
+        )?,
+        matmul_f64: decl(
+            jit_module,
+            "__trt_matmul_f64",
+            &[pt, pt, pt, i64t, i64t, i64t],
+            &[],
+        )?,
+        slice_f64: decl(
+            jit_module,
+            "__trt_slice_f64",
+            &[pt, pt, i64t, i64t, pt, i64t, pt, pt],
+            &[],
+        )?,
+        pad_f64: decl(
+            jit_module,
+            "__trt_pad_f64",
+            &[pt, pt, i64t, i64t, f64t, pt, pt, i64t, pt],
+            &[],
+        )?,
+        concat_nd_f64: decl(
+            jit_module,
+            "__trt_concat_nd_f64",
+            &[pt, i64t, pt, i64t, pt, i64t, pt, pt, i64t, i64t],
+            &[],
+        )?,
+        dynamic_slice_f64: decl(
+            jit_module,
+            "__trt_dyn_slice_f64",
+            &[pt, pt, i64t, i64t, pt, i64t, pt, pt],
+            &[],
+        )?,
+        dynamic_update_slice_f64: decl(
+            jit_module,
+            "__trt_dyn_upd_slice_f64",
+            &[pt, pt, pt, i64t, i64t, pt, i64t, pt, pt],
+            &[],
+        )?,
+        iota_nd_i64: decl(
+            jit_module,
+            "__trt_iota_nd_i64",
+            &[pt, i64t, pt, i64t, i64t],
+            &[],
+        )?,
+        iota_nd_f64: decl(
+            jit_module,
+            "__trt_iota_nd_f64",
+            &[pt, i64t, pt, i64t, i64t],
+            &[],
+        )?,
+        add_i64: binop(jit_module, "__trt_add_i64")?,
+        sub_i64: binop(jit_module, "__trt_sub_i64")?,
+        mul_i64: binop(jit_module, "__trt_mul_i64")?,
+        widen_i32_to_i64: unop(jit_module, "__trt_widen_i32_i64")?,
+        convert_i64_to_i32: unop(jit_module, "__trt_cvt_i64_i32")?,
+        select_i32: decl(jit_module, "__trt_select_i32", &[pt, pt, pt, pt, i64t], &[])?,
+        broadcast_i32: decl(jit_module, "__trt_bcast_i32", &[pt, types::I32, i64t], &[])?,
+        add_i32: binop(jit_module, "__trt_add_i32")?,
+        sub_i32: binop(jit_module, "__trt_sub_i32")?,
+        div_i32: binop(jit_module, "__trt_div_i32")?,
+        div_ui32: binop(jit_module, "__trt_div_ui32")?,
+        cmp_lt_i32: cmp(jit_module, "__trt_cmp_lt_i32")?,
+        convert_f64_to_i32: unop(jit_module, "__trt_cvt_f64_i32")?,
+        convert_i1_to_i32: unop(jit_module, "__trt_cvt_i1_i32")?,
+        convert_i32_to_f64: unop(jit_module, "__trt_cvt_i32_f64")?,
+        convert_f64_to_f32: unop(jit_module, "__trt_cvt_f64_f32")?,
+        convert_f32_to_f64: unop(jit_module, "__trt_cvt_f32_f64")?,
+    })
+}
+
+// ---------------------------------------------------------------------------
 // Module compilation entry point
 // ---------------------------------------------------------------------------
 
 pub fn compile_module(ir_module: &crate::ir::Module) -> Result<CompiledModule, String> {
+    compile_module_with_config(ir_module, CompileConfig::default())
+}
+
+pub fn compile_module_with_config(
+    ir_module: &crate::ir::Module,
+    config: CompileConfig,
+) -> Result<CompiledModule, String> {
     let mut flag_builder = settings::builder();
     flag_builder.set("opt_level", "speed").unwrap();
     flag_builder.set("is_pic", "false").unwrap();
@@ -331,21 +848,32 @@ pub fn compile_module(ir_module: &crate::ir::Module) -> Result<CompiledModule, S
     jit_builder.symbol("tan", libc_tan as *const u8);
     jit_builder.symbol("erf_inv_impl", erf_inv_scalar as *const u8);
     jit_builder.symbol("__cranelift_svd_3x3", svd_3x3 as *const u8);
+    register_tensor_rt_symbols(&mut jit_builder);
 
     let mut jit_module = JITModule::new(jit_builder);
-    let func_ids = declare_all_functions(ir_module, &mut jit_module, call_conv)?;
+    let func_abis = classify_all_functions(ir_module);
+    let func_ids = declare_all_functions(ir_module, &mut jit_module, call_conv, &func_abis)?;
     let libm_ids = declare_libm_functions(&mut jit_module, call_conv)?;
+    let trt_ids = declare_tensor_rt_functions(&mut jit_module, call_conv)?;
 
     for func_def in &ir_module.functions {
         let fid = func_ids[&func_def.name];
+        let abi = func_abis
+            .get(&func_def.name)
+            .copied()
+            .unwrap_or(FuncAbi::Scalar);
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             define_function(
                 &mut jit_module,
                 func_def,
                 ir_module,
                 &func_ids,
+                &func_abis,
                 &libm_ids,
+                &trt_ids,
+                abi,
                 fid,
+                config,
             )
         }));
         match result {
@@ -380,14 +908,24 @@ fn declare_all_functions(
     ir_module: &crate::ir::Module,
     jit_module: &mut JITModule,
     call_conv: CallConv,
+    func_abis: &HashMap<String, FuncAbi>,
 ) -> Result<HashMap<String, FuncId>, String> {
     let mut ids = HashMap::new();
     for func_def in &ir_module.functions {
         let mut sig = jit_module.make_signature();
         sig.call_conv = call_conv;
+        let abi = func_abis
+            .get(&func_def.name)
+            .copied()
+            .unwrap_or(FuncAbi::Scalar);
 
         if func_def.name == "main" {
             sig.params.push(AbiParam::new(ptr_type()));
+            sig.params.push(AbiParam::new(ptr_type()));
+        } else if abi == FuncAbi::Pointer {
+            for _ in &func_def.params {
+                sig.params.push(AbiParam::new(ptr_type()));
+            }
             sig.params.push(AbiParam::new(ptr_type()));
         } else {
             for (_vid, ty) in &func_def.params {
@@ -419,13 +957,19 @@ fn declare_all_functions(
 // Function definition (body lowering + ABI handling)
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 fn define_function(
     jit_module: &mut JITModule,
     func_def: &crate::ir::FuncDef,
     ir_module: &crate::ir::Module,
     func_ids: &HashMap<String, FuncId>,
+    func_abis: &HashMap<String, FuncAbi>,
     libm_ids: &LibmIds,
+    trt_ids: &TensorRtIds,
+    abi: FuncAbi,
     fid: FuncId,
+    config: CompileConfig,
 ) -> Result<(), String> {
     let mut ctx = jit_module.make_context();
     let mut func_ctx = FunctionBuilderContext::new();
@@ -448,13 +992,43 @@ fn define_function(
         let mut value_map: HashMap<ValueId, TensorVals> = HashMap::new();
         let mut type_map: HashMap<ValueId, TensorType> = HashMap::new();
 
-        if func_def.name == "main" {
+        if func_def.name == "main" && config.force_pointer_abi_main {
+            lower_main_body_mem(
+                &mut builder,
+                func_def,
+                ir_module,
+                func_ids,
+                libm_ids,
+                trt_ids,
+                func_abis,
+                jit_module,
+                &block_params,
+                &mut value_map,
+                &mut type_map,
+            )?;
+        } else if func_def.name == "main" {
             lower_main_body(
                 &mut builder,
                 func_def,
                 ir_module,
                 func_ids,
                 libm_ids,
+                trt_ids,
+                func_abis,
+                jit_module,
+                &block_params,
+                &mut value_map,
+                &mut type_map,
+            )?;
+        } else if abi == FuncAbi::Pointer {
+            lower_pointer_body(
+                &mut builder,
+                func_def,
+                ir_module,
+                func_ids,
+                libm_ids,
+                trt_ids,
+                func_abis,
                 jit_module,
                 &block_params,
                 &mut value_map,
@@ -467,6 +1041,8 @@ fn define_function(
                 ir_module,
                 func_ids,
                 libm_ids,
+                trt_ids,
+                func_abis,
                 jit_module,
                 &block_params,
                 &mut value_map,
@@ -476,7 +1052,6 @@ fn define_function(
 
         builder.finalize();
     }
-
 
     jit_module
         .define_function(fid, &mut ctx)
@@ -492,6 +1067,8 @@ fn lower_main_body(
     ir_module: &crate::ir::Module,
     func_ids: &HashMap<String, FuncId>,
     libm_ids: &LibmIds,
+    trt_ids: &TensorRtIds,
+    func_abis: &HashMap<String, FuncAbi>,
     jit_module: &mut JITModule,
     block_params: &[Value],
     value_map: &mut HashMap<ValueId, TensorVals>,
@@ -523,6 +1100,8 @@ fn lower_main_body(
         ir_module,
         func_ids,
         libm_ids,
+        trt_ids,
+        func_abis,
         jit_module,
         value_map,
         type_map,
@@ -551,6 +1130,1426 @@ fn lower_main_body(
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Memory-backed (pointer ABI) body lowering
+// All values in value_map are vec![ptr] -- a single i64 pointer to a stack buffer.
+// All ops dispatch to tensor_rt functions.
+// ---------------------------------------------------------------------------
+
+fn alloc_slot(builder: &mut FunctionBuilder, byte_size: usize) -> Value {
+    let ss = builder.create_sized_stack_slot(StackSlotData::new(
+        StackSlotKind::ExplicitSlot,
+        byte_size as u32,
+        3,
+    ));
+    builder.ins().stack_addr(ptr_type(), ss, 0)
+}
+
+fn store_i64_array(builder: &mut FunctionBuilder, vals: &[i64]) -> Value {
+    let ptr = alloc_slot(builder, vals.len() * 8);
+    for (i, &v) in vals.iter().enumerate() {
+        let cv = builder.ins().iconst(types::I64, v);
+        builder
+            .ins()
+            .store(MemFlags::trusted(), cv, ptr, (i * 8) as i32);
+    }
+    ptr
+}
+
+#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
+fn lower_pointer_body(
+    builder: &mut FunctionBuilder,
+    func_def: &crate::ir::FuncDef,
+    ir_module: &crate::ir::Module,
+    func_ids: &HashMap<String, FuncId>,
+    libm_ids: &LibmIds,
+    trt_ids: &TensorRtIds,
+    func_abis: &HashMap<String, FuncAbi>,
+    jit_module: &mut JITModule,
+    block_params: &[Value],
+    value_map: &mut HashMap<ValueId, TensorVals>,
+    type_map: &mut HashMap<ValueId, TensorType>,
+) -> Result<(), String> {
+    for (i, (vid, ty)) in func_def.params.iter().enumerate() {
+        let param_ptr = block_params[i];
+        value_map.insert(*vid, vec![param_ptr]);
+        type_map.insert(*vid, ty.clone());
+    }
+
+    let out_ptr = block_params[func_def.params.len()];
+
+    lower_body_mem(
+        builder,
+        &func_def.body,
+        ir_module,
+        func_ids,
+        libm_ids,
+        trt_ids,
+        func_abis,
+        jit_module,
+        value_map,
+        type_map,
+    )?;
+
+    if let Some(ret_instr) = func_def.body.last()
+        && let Instruction::Return { operands } = &ret_instr.instr
+    {
+        let memcpy_ref = jit_module.declare_func_in_func(trt_ids.memcpy, builder.func);
+        let mut byte_offset = 0i64;
+        for (vid, ty) in operands.iter().zip(func_def.result_types.iter()) {
+            let vals = value_map
+                .get(vid)
+                .ok_or_else(|| format!("ptr body: missing return {:?}", vid))?;
+            let dst = builder.ins().iadd_imm(out_ptr, byte_offset);
+            let nb = builder.ins().iconst(types::I64, ty.byte_size() as i64);
+            builder.ins().call(memcpy_ref, &[dst, vals[0], nb]);
+            byte_offset += ty.byte_size() as i64;
+        }
+    }
+    builder.ins().return_(&[]);
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn lower_main_body_mem(
+    builder: &mut FunctionBuilder,
+    func_def: &crate::ir::FuncDef,
+    ir_module: &crate::ir::Module,
+    func_ids: &HashMap<String, FuncId>,
+    libm_ids: &LibmIds,
+    trt_ids: &TensorRtIds,
+    func_abis: &HashMap<String, FuncAbi>,
+    jit_module: &mut JITModule,
+    block_params: &[Value],
+    value_map: &mut HashMap<ValueId, TensorVals>,
+    type_map: &mut HashMap<ValueId, TensorType>,
+) -> Result<(), String> {
+    let inputs_ptr = block_params[0];
+    let outputs_ptr = block_params[1];
+
+    for (i, (vid, ty)) in func_def.params.iter().enumerate() {
+        let buf_ptr =
+            builder
+                .ins()
+                .load(ptr_type(), MemFlags::trusted(), inputs_ptr, (i * 8) as i32);
+        value_map.insert(*vid, vec![buf_ptr]);
+        type_map.insert(*vid, ty.clone());
+    }
+
+    lower_body_mem(
+        builder,
+        &func_def.body,
+        ir_module,
+        func_ids,
+        libm_ids,
+        trt_ids,
+        func_abis,
+        jit_module,
+        value_map,
+        type_map,
+    )?;
+
+    if let Some(ret_instr) = func_def.body.last()
+        && let Instruction::Return { operands } = &ret_instr.instr
+    {
+        let memcpy_ref = jit_module.declare_func_in_func(trt_ids.memcpy, builder.func);
+        for (i, (vid, ty)) in operands
+            .iter()
+            .zip(func_def.result_types.iter())
+            .enumerate()
+        {
+            let vals = value_map
+                .get(vid)
+                .ok_or_else(|| format!("main_mem: missing return {:?}", vid))?;
+            let buf_ptr =
+                builder
+                    .ins()
+                    .load(ptr_type(), MemFlags::trusted(), outputs_ptr, (i * 8) as i32);
+            let nb = builder.ins().iconst(types::I64, ty.byte_size() as i64);
+            builder.ins().call(memcpy_ref, &[buf_ptr, vals[0], nb]);
+        }
+    }
+    builder.ins().return_(&[]);
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn lower_body_mem(
+    builder: &mut FunctionBuilder,
+    body: &[InstrResult],
+    ir_module: &crate::ir::Module,
+    func_ids: &HashMap<String, FuncId>,
+    libm_ids: &LibmIds,
+    trt_ids: &TensorRtIds,
+    func_abis: &HashMap<String, FuncAbi>,
+    jit_module: &mut JITModule,
+    value_map: &mut HashMap<ValueId, TensorVals>,
+    type_map: &mut HashMap<ValueId, TensorType>,
+) -> Result<(), String> {
+    for ir in body {
+        if matches!(ir.instr, Instruction::Return { .. }) {
+            break;
+        }
+        let result_types: Vec<TensorType> = ir.values.iter().map(|(_, t)| t.clone()).collect();
+        let result_vals = lower_instruction_mem(
+            builder,
+            &ir.instr,
+            &result_types,
+            ir_module,
+            func_ids,
+            libm_ids,
+            trt_ids,
+            func_abis,
+            jit_module,
+            value_map,
+            type_map,
+        )?;
+        for (i, (vid, ty)) in ir.values.iter().enumerate() {
+            if i < result_vals.len() {
+                value_map.insert(*vid, result_vals[i].clone());
+                type_map.insert(*vid, ty.clone());
+            }
+        }
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn lower_instruction_mem(
+    builder: &mut FunctionBuilder,
+    instr: &Instruction,
+    result_types: &[TensorType],
+    ir_module: &crate::ir::Module,
+    func_ids: &HashMap<String, FuncId>,
+    libm_ids: &LibmIds,
+    trt_ids: &TensorRtIds,
+    func_abis: &HashMap<String, FuncAbi>,
+    jit_module: &mut JITModule,
+    value_map: &mut HashMap<ValueId, TensorVals>,
+    type_map: &mut HashMap<ValueId, TensorType>,
+) -> Result<Vec<TensorVals>, String> {
+    let rt = result_types
+        .first()
+        .cloned()
+        .unwrap_or(TensorType::scalar(ElementType::F64));
+    let n = rt.num_elements();
+    let elem_sz = rt.element_type.byte_size();
+
+    let get = |vid: &ValueId| -> Result<Value, String> {
+        value_map
+            .get(vid)
+            .and_then(|v| v.first().copied())
+            .ok_or_else(|| format!("mem: missing value {:?}", vid))
+    };
+
+    let trt_call = |builder: &mut FunctionBuilder,
+                    jit_module: &mut JITModule,
+                    func_id: FuncId,
+                    args: &[Value]|
+     -> Value {
+        let func_ref = jit_module.declare_func_in_func(func_id, builder.func);
+        builder.ins().call(func_ref, args);
+        args[0]
+    };
+
+    match instr {
+        Instruction::Constant { value } => {
+            let dst = alloc_slot(builder, n * elem_sz);
+            match value {
+                ConstantValue::DenseScalar(sv) | ConstantValue::DenseSplat(sv, _) => {
+                    let scalar = scalar_to_cranelift(builder, sv, rt.element_type);
+                    let fid = match rt.element_type {
+                        ElementType::F64 | ElementType::F32 => trt_ids.broadcast_f64,
+                        ElementType::I32 | ElementType::UI32 => trt_ids.broadcast_i32,
+                        _ => trt_ids.broadcast_i64,
+                    };
+                    let n_val = builder.ins().iconst(types::I64, n as i64);
+                    trt_call(builder, jit_module, fid, &[dst, scalar, n_val]);
+                }
+                ConstantValue::DenseArray(arr) => {
+                    let mut bytes = Vec::with_capacity(n * elem_sz);
+                    for sv in arr {
+                        match rt.element_type {
+                            ElementType::F64 => bytes.extend_from_slice(&sv.as_f64().to_ne_bytes()),
+                            ElementType::F32 => {
+                                bytes.extend_from_slice(&(sv.as_f64() as f32).to_ne_bytes())
+                            }
+                            ElementType::I64 | ElementType::UI64 => {
+                                bytes.extend_from_slice(&sv.as_i64().to_ne_bytes())
+                            }
+                            ElementType::I32 | ElementType::UI32 => {
+                                bytes.extend_from_slice(&(sv.as_i64() as i32).to_ne_bytes())
+                            }
+                            ElementType::I1 => bytes.push(if sv.as_i64() != 0 { 1 } else { 0 }),
+                        }
+                    }
+                    let data_id = jit_module
+                        .declare_anonymous_data(false, false)
+                        .map_err(|e| format!("declare data: {e}"))?;
+                    let mut desc = DataDescription::new();
+                    desc.define(bytes.into_boxed_slice());
+                    desc.set_align(8);
+                    jit_module
+                        .define_data(data_id, &desc)
+                        .map_err(|e| format!("define data: {e}"))?;
+                    let gv = jit_module.declare_data_in_func(data_id, builder.func);
+                    let src = builder.ins().global_value(ptr_type(), gv);
+                    let memcpy_ref = jit_module.declare_func_in_func(trt_ids.memcpy, builder.func);
+                    let nb = builder.ins().iconst(types::I64, (n * elem_sz) as i64);
+                    builder.ins().call(memcpy_ref, &[dst, src, nb]);
+                }
+            }
+            Ok(vec![vec![dst]])
+        }
+
+        Instruction::Add { lhs, rhs } => {
+            let dst = alloc_slot(builder, n * elem_sz);
+            let n_val = builder.ins().iconst(types::I64, n as i64);
+            let fid = match rt.element_type {
+                ElementType::F64 | ElementType::F32 => trt_ids.add_f64,
+                ElementType::I32 | ElementType::UI32 => trt_ids.add_i32,
+                _ => trt_ids.add_i64,
+            };
+            trt_call(
+                builder,
+                jit_module,
+                fid,
+                &[dst, get(lhs)?, get(rhs)?, n_val],
+            );
+            Ok(vec![vec![dst]])
+        }
+        Instruction::Subtract { lhs, rhs } => {
+            let dst = alloc_slot(builder, n * elem_sz);
+            let n_val = builder.ins().iconst(types::I64, n as i64);
+            let fid = match rt.element_type {
+                ElementType::F64 | ElementType::F32 => trt_ids.sub_f64,
+                ElementType::I32 | ElementType::UI32 => trt_ids.sub_i32,
+                _ => trt_ids.sub_i64,
+            };
+            trt_call(
+                builder,
+                jit_module,
+                fid,
+                &[dst, get(lhs)?, get(rhs)?, n_val],
+            );
+            Ok(vec![vec![dst]])
+        }
+        Instruction::Multiply { lhs, rhs } => {
+            let dst = alloc_slot(builder, n * elem_sz);
+            let n_val = builder.ins().iconst(types::I64, n as i64);
+            let fid = if is_float(rt.element_type) {
+                trt_ids.mul_f64
+            } else {
+                trt_ids.mul_i64
+            };
+            trt_call(
+                builder,
+                jit_module,
+                fid,
+                &[dst, get(lhs)?, get(rhs)?, n_val],
+            );
+            Ok(vec![vec![dst]])
+        }
+        Instruction::Divide { lhs, rhs } => {
+            let dst = alloc_slot(builder, n * elem_sz);
+            let n_val = builder.ins().iconst(types::I64, n as i64);
+            let fid = match rt.element_type {
+                ElementType::F64 | ElementType::F32 => trt_ids.div_f64,
+                ElementType::UI32 => trt_ids.div_ui32,
+                ElementType::I32 => trt_ids.div_i32,
+                _ => trt_ids.div_f64,
+            };
+            trt_call(
+                builder,
+                jit_module,
+                fid,
+                &[dst, get(lhs)?, get(rhs)?, n_val],
+            );
+            Ok(vec![vec![dst]])
+        }
+        Instruction::Maximum { lhs, rhs } => {
+            let dst = alloc_slot(builder, n * elem_sz);
+            let n_val = builder.ins().iconst(types::I64, n as i64);
+            trt_call(
+                builder,
+                jit_module,
+                trt_ids.max_f64,
+                &[dst, get(lhs)?, get(rhs)?, n_val],
+            );
+            Ok(vec![vec![dst]])
+        }
+        Instruction::Minimum { lhs, rhs } => {
+            let dst = alloc_slot(builder, n * elem_sz);
+            let n_val = builder.ins().iconst(types::I64, n as i64);
+            trt_call(
+                builder,
+                jit_module,
+                trt_ids.min_f64,
+                &[dst, get(lhs)?, get(rhs)?, n_val],
+            );
+            Ok(vec![vec![dst]])
+        }
+        Instruction::Power { lhs, rhs } => {
+            let dst = alloc_slot(builder, n * elem_sz);
+            let n_val = builder.ins().iconst(types::I64, n as i64);
+            trt_call(
+                builder,
+                jit_module,
+                trt_ids.pow_f64,
+                &[dst, get(lhs)?, get(rhs)?, n_val],
+            );
+            Ok(vec![vec![dst]])
+        }
+        Instruction::Remainder { lhs, rhs } if is_float(rt.element_type) => {
+            let dst = alloc_slot(builder, n * elem_sz);
+            let n_val = builder.ins().iconst(types::I64, n as i64);
+            trt_call(
+                builder,
+                jit_module,
+                trt_ids.rem_f64,
+                &[dst, get(lhs)?, get(rhs)?, n_val],
+            );
+            Ok(vec![vec![dst]])
+        }
+
+        Instruction::Negate { operand } => {
+            let dst = alloc_slot(builder, n * elem_sz);
+            let n_val = builder.ins().iconst(types::I64, n as i64);
+            trt_call(
+                builder,
+                jit_module,
+                trt_ids.neg_f64,
+                &[dst, get(operand)?, n_val],
+            );
+            Ok(vec![vec![dst]])
+        }
+        Instruction::Sqrt { operand } => {
+            let dst = alloc_slot(builder, n * elem_sz);
+            let n_val = builder.ins().iconst(types::I64, n as i64);
+            trt_call(
+                builder,
+                jit_module,
+                trt_ids.sqrt_f64,
+                &[dst, get(operand)?, n_val],
+            );
+            Ok(vec![vec![dst]])
+        }
+        Instruction::Abs { operand } if is_float(rt.element_type) => {
+            let dst = alloc_slot(builder, n * elem_sz);
+            let n_val = builder.ins().iconst(types::I64, n as i64);
+            trt_call(
+                builder,
+                jit_module,
+                trt_ids.abs_f64,
+                &[dst, get(operand)?, n_val],
+            );
+            Ok(vec![vec![dst]])
+        }
+        Instruction::Floor { operand } => {
+            let dst = alloc_slot(builder, n * elem_sz);
+            let n_val = builder.ins().iconst(types::I64, n as i64);
+            trt_call(
+                builder,
+                jit_module,
+                trt_ids.floor_f64,
+                &[dst, get(operand)?, n_val],
+            );
+            Ok(vec![vec![dst]])
+        }
+        Instruction::Sine { operand } => {
+            let dst = alloc_slot(builder, n * elem_sz);
+            let n_val = builder.ins().iconst(types::I64, n as i64);
+            trt_call(
+                builder,
+                jit_module,
+                trt_ids.sin_f64,
+                &[dst, get(operand)?, n_val],
+            );
+            Ok(vec![vec![dst]])
+        }
+        Instruction::Cosine { operand } => {
+            let dst = alloc_slot(builder, n * elem_sz);
+            let n_val = builder.ins().iconst(types::I64, n as i64);
+            trt_call(
+                builder,
+                jit_module,
+                trt_ids.cos_f64,
+                &[dst, get(operand)?, n_val],
+            );
+            Ok(vec![vec![dst]])
+        }
+        Instruction::Exponential { operand } => {
+            let dst = alloc_slot(builder, n * elem_sz);
+            let n_val = builder.ins().iconst(types::I64, n as i64);
+            trt_call(
+                builder,
+                jit_module,
+                trt_ids.exp_f64,
+                &[dst, get(operand)?, n_val],
+            );
+            Ok(vec![vec![dst]])
+        }
+        Instruction::Log { operand } => {
+            let dst = alloc_slot(builder, n * elem_sz);
+            let n_val = builder.ins().iconst(types::I64, n as i64);
+            trt_call(
+                builder,
+                jit_module,
+                trt_ids.log_f64,
+                &[dst, get(operand)?, n_val],
+            );
+            Ok(vec![vec![dst]])
+        }
+        Instruction::Tanh { operand } => {
+            let dst = alloc_slot(builder, n * elem_sz);
+            let n_val = builder.ins().iconst(types::I64, n as i64);
+            trt_call(
+                builder,
+                jit_module,
+                trt_ids.tanh_f64,
+                &[dst, get(operand)?, n_val],
+            );
+            Ok(vec![vec![dst]])
+        }
+
+        Instruction::Reshape { operand } => Ok(vec![vec![get(operand)?]]),
+
+        Instruction::Compare {
+            lhs,
+            rhs,
+            direction,
+            compare_type,
+        } => {
+            let l_ty = type_map
+                .get(lhs)
+                .cloned()
+                .unwrap_or(TensorType::scalar(ElementType::F64));
+            let use_float = is_float(l_ty.element_type)
+                || matches!(compare_type, CompareType::Float | CompareType::TotalOrder);
+            let func_id = if use_float {
+                match direction {
+                    CompareDirection::Eq => trt_ids.cmp_eq_f64,
+                    CompareDirection::Ne => trt_ids.cmp_ne_f64,
+                    CompareDirection::Lt => trt_ids.cmp_lt_f64,
+                    CompareDirection::Le => trt_ids.cmp_le_f64,
+                    CompareDirection::Gt => trt_ids.cmp_gt_f64,
+                    CompareDirection::Ge => trt_ids.cmp_ge_f64,
+                }
+            } else if matches!(l_ty.element_type, ElementType::I32 | ElementType::UI32) {
+                match direction {
+                    CompareDirection::Lt => trt_ids.cmp_lt_i32,
+                    _ => trt_ids.cmp_eq_i64,
+                }
+            } else {
+                match direction {
+                    CompareDirection::Eq => trt_ids.cmp_eq_i64,
+                    CompareDirection::Lt => trt_ids.cmp_lt_i64,
+                    _ => trt_ids.cmp_eq_i64,
+                }
+            };
+            let dst = alloc_slot(builder, n);
+            let n_val = builder.ins().iconst(types::I64, n as i64);
+            let func_ref = jit_module.declare_func_in_func(func_id, builder.func);
+            builder
+                .ins()
+                .call(func_ref, &[dst, get(lhs)?, get(rhs)?, n_val]);
+            Ok(vec![vec![dst]])
+        }
+
+        Instruction::Select {
+            cond,
+            on_true,
+            on_false,
+        } => {
+            let dst = alloc_slot(builder, n * elem_sz);
+            let n_val = builder.ins().iconst(types::I64, n as i64);
+            let fid = match rt.element_type {
+                ElementType::F64 | ElementType::F32 => trt_ids.select_f64,
+                ElementType::I32 | ElementType::UI32 => trt_ids.select_i32,
+                _ => trt_ids.select_i64,
+            };
+            let func_ref = jit_module.declare_func_in_func(fid, builder.func);
+            builder.ins().call(
+                func_ref,
+                &[dst, get(cond)?, get(on_true)?, get(on_false)?, n_val],
+            );
+            Ok(vec![vec![dst]])
+        }
+
+        Instruction::Convert { operand } => {
+            let src_ty = type_map
+                .get(operand)
+                .cloned()
+                .unwrap_or(TensorType::scalar(ElementType::F64));
+            if src_ty.element_type == rt.element_type
+                || (matches!(src_ty.element_type, ElementType::I32 | ElementType::UI32)
+                    && matches!(rt.element_type, ElementType::I32 | ElementType::UI32))
+                || (matches!(src_ty.element_type, ElementType::I64 | ElementType::UI64)
+                    && matches!(rt.element_type, ElementType::I64 | ElementType::UI64))
+            {
+                return Ok(vec![vec![get(operand)?]]);
+            }
+            let func_id = match (src_ty.element_type, rt.element_type) {
+                (ElementType::I64 | ElementType::UI64, ElementType::F64) => {
+                    trt_ids.convert_i64_to_f64
+                }
+                (ElementType::F64, ElementType::I64) => trt_ids.convert_f64_to_i64,
+                (ElementType::I1, ElementType::F64) => trt_ids.convert_i1_to_f64,
+                (ElementType::F64, ElementType::I32 | ElementType::UI32) => {
+                    trt_ids.convert_f64_to_i32
+                }
+                (ElementType::I64, ElementType::I32 | ElementType::UI32) => {
+                    trt_ids.convert_i64_to_i32
+                }
+                (ElementType::I1, ElementType::I32 | ElementType::UI32) => {
+                    trt_ids.convert_i1_to_i32
+                }
+                (ElementType::I32 | ElementType::UI32, ElementType::F64) => {
+                    trt_ids.convert_i32_to_f64
+                }
+                (ElementType::F64, ElementType::F32) => trt_ids.convert_f64_to_f32,
+                (ElementType::F32, ElementType::F64) => trt_ids.convert_f32_to_f64,
+                _ => {
+                    return Err(format!(
+                        "mem: unsupported convert {:?} -> {:?}",
+                        src_ty.element_type, rt.element_type
+                    ));
+                }
+            };
+            let dst = alloc_slot(builder, n * elem_sz);
+            let n_val = builder.ins().iconst(types::I64, n as i64);
+            let func_ref = jit_module.declare_func_in_func(func_id, builder.func);
+            builder.ins().call(func_ref, &[dst, get(operand)?, n_val]);
+            Ok(vec![vec![dst]])
+        }
+
+        Instruction::BroadcastInDim {
+            operand,
+            broadcast_dims,
+        } => {
+            let src_ty = type_map
+                .get(operand)
+                .cloned()
+                .unwrap_or(TensorType::scalar(ElementType::F64));
+            let src_n = src_ty.num_elements();
+            let dst = alloc_slot(builder, n * elem_sz);
+
+            if src_n == 1 {
+                let src_ptr = get(operand)?;
+                let ct = cranelift_type_for(src_ty.element_type);
+                let scalar = builder.ins().load(ct, MemFlags::trusted(), src_ptr, 0);
+                let fid = match rt.element_type {
+                    ElementType::F64 | ElementType::F32 => trt_ids.broadcast_f64,
+                    ElementType::I32 | ElementType::UI32 => trt_ids.broadcast_i32,
+                    _ => trt_ids.broadcast_i64,
+                };
+                let func_ref = jit_module.declare_func_in_func(fid, builder.func);
+                let n_val = builder.ins().iconst(types::I64, n as i64);
+                builder.ins().call(func_ref, &[dst, scalar, n_val]);
+            } else if src_n == n {
+                let memcpy_ref = jit_module.declare_func_in_func(trt_ids.memcpy, builder.func);
+                let nb = builder.ins().iconst(types::I64, (n * elem_sz) as i64);
+                builder.ins().call(memcpy_ref, &[dst, get(operand)?, nb]);
+            } else {
+                let func_ref =
+                    jit_module.declare_func_in_func(trt_ids.broadcast_nd_f64, builder.func);
+                let n_dst_v = builder.ins().iconst(types::I64, n as i64);
+                let n_src_v = builder.ins().iconst(types::I64, src_n as i64);
+                let dst_shape_ptr = store_i64_array(builder, &rt.shape);
+                let dst_rank_v = builder.ins().iconst(types::I64, rt.rank() as i64);
+                let src_shape_ptr = store_i64_array(builder, &src_ty.shape);
+                let src_rank_v = builder.ins().iconst(types::I64, src_ty.rank() as i64);
+                let bd_ptr = store_i64_array(builder, broadcast_dims);
+                builder.ins().call(
+                    func_ref,
+                    &[
+                        dst,
+                        get(operand)?,
+                        n_dst_v,
+                        n_src_v,
+                        dst_shape_ptr,
+                        dst_rank_v,
+                        src_shape_ptr,
+                        src_rank_v,
+                        bd_ptr,
+                    ],
+                );
+            }
+            Ok(vec![vec![dst]])
+        }
+
+        Instruction::Transpose {
+            operand,
+            permutation,
+        } if is_float(rt.element_type) => {
+            let src_ty = type_map.get(operand).cloned().unwrap_or(rt.clone());
+            let dst = alloc_slot(builder, n * elem_sz);
+            if rt.rank() == 2 {
+                let func_ref = jit_module.declare_func_in_func(trt_ids.transpose_f64, builder.func);
+                let rows_v = builder.ins().iconst(types::I64, src_ty.shape[0]);
+                let cols_v = builder.ins().iconst(types::I64, src_ty.shape[1]);
+                builder
+                    .ins()
+                    .call(func_ref, &[dst, get(operand)?, rows_v, cols_v]);
+            } else {
+                let func_ref =
+                    jit_module.declare_func_in_func(trt_ids.transpose_nd_f64, builder.func);
+                let n_val = builder.ins().iconst(types::I64, n as i64);
+                let shape_ptr = store_i64_array(builder, &src_ty.shape);
+                let perm_ptr = store_i64_array(builder, permutation);
+                let rank_v = builder.ins().iconst(types::I64, src_ty.rank() as i64);
+                builder.ins().call(
+                    func_ref,
+                    &[dst, get(operand)?, n_val, shape_ptr, perm_ptr, rank_v],
+                );
+            }
+            Ok(vec![vec![dst]])
+        }
+
+        Instruction::Slice {
+            operand,
+            start_indices,
+            limit_indices,
+        } => {
+            let src_ty = type_map.get(operand).cloned().unwrap_or(rt.clone());
+            let n_src = src_ty.num_elements();
+            let dst = alloc_slot(builder, n * elem_sz);
+            let func_ref = jit_module.declare_func_in_func(trt_ids.slice_f64, builder.func);
+            let n_dst_v = builder.ins().iconst(types::I64, n as i64);
+            let n_src_v = builder.ins().iconst(types::I64, n_src as i64);
+            let shape_ptr = store_i64_array(builder, &src_ty.shape);
+            let rank_v = builder.ins().iconst(types::I64, src_ty.rank() as i64);
+            let starts_ptr = store_i64_array(builder, start_indices);
+            let limits_ptr = store_i64_array(builder, limit_indices);
+            builder.ins().call(
+                func_ref,
+                &[
+                    dst,
+                    get(operand)?,
+                    n_dst_v,
+                    n_src_v,
+                    shape_ptr,
+                    rank_v,
+                    starts_ptr,
+                    limits_ptr,
+                ],
+            );
+            Ok(vec![vec![dst]])
+        }
+
+        Instruction::Concatenate {
+            operands,
+            dimension,
+        } => {
+            let dim = *dimension as usize;
+            let dst = alloc_slot(builder, n * elem_sz);
+
+            if dim == 0 || rt.rank() <= 1 {
+                let memcpy_ref = jit_module.declare_func_in_func(trt_ids.memcpy, builder.func);
+                let mut byte_off = 0i64;
+                for vid in operands {
+                    let src_ty = type_map.get(vid).cloned().unwrap_or(rt.clone());
+                    let src_bytes = src_ty.byte_size();
+                    let d = builder.ins().iadd_imm(dst, byte_off);
+                    let nb = builder.ins().iconst(types::I64, src_bytes as i64);
+                    builder.ins().call(memcpy_ref, &[d, get(vid)?, nb]);
+                    byte_off += src_bytes as i64;
+                }
+            } else if operands.len() == 2 {
+                let a_ty = type_map.get(&operands[0]).cloned().unwrap_or(rt.clone());
+                let b_ty = type_map.get(&operands[1]).cloned().unwrap_or(rt.clone());
+                let func_ref = jit_module.declare_func_in_func(trt_ids.concat_nd_f64, builder.func);
+                let n_dst_v = builder.ins().iconst(types::I64, n as i64);
+                let n_a_v = builder.ins().iconst(types::I64, a_ty.num_elements() as i64);
+                let n_b_v = builder.ins().iconst(types::I64, b_ty.num_elements() as i64);
+                let dst_shape_ptr = store_i64_array(builder, &rt.shape);
+                let a_shape_ptr = store_i64_array(builder, &a_ty.shape);
+                let rank_v = builder.ins().iconst(types::I64, rt.rank() as i64);
+                let dim_v = builder.ins().iconst(types::I64, dim as i64);
+                builder.ins().call(
+                    func_ref,
+                    &[
+                        dst,
+                        n_dst_v,
+                        get(&operands[0])?,
+                        n_a_v,
+                        get(&operands[1])?,
+                        n_b_v,
+                        dst_shape_ptr,
+                        a_shape_ptr,
+                        rank_v,
+                        dim_v,
+                    ],
+                );
+            } else {
+                let memcpy_ref = jit_module.declare_func_in_func(trt_ids.memcpy, builder.func);
+                let mut byte_off = 0i64;
+                for vid in operands {
+                    let src_ty = type_map.get(vid).cloned().unwrap_or(rt.clone());
+                    let src_bytes = src_ty.byte_size();
+                    let d = builder.ins().iadd_imm(dst, byte_off);
+                    let nb = builder.ins().iconst(types::I64, src_bytes as i64);
+                    builder.ins().call(memcpy_ref, &[d, get(vid)?, nb]);
+                    byte_off += src_bytes as i64;
+                }
+            }
+            Ok(vec![vec![dst]])
+        }
+
+        Instruction::Pad {
+            operand,
+            padding_value,
+            low,
+            ..
+        } => {
+            let src_ty = type_map.get(operand).cloned().unwrap_or(rt.clone());
+            let n_src = src_ty.num_elements();
+            let dst = alloc_slot(builder, n * elem_sz);
+            let pad_ptr = get(padding_value)?;
+            let pad_scalar = builder
+                .ins()
+                .load(types::F64, MemFlags::trusted(), pad_ptr, 0);
+            let func_ref = jit_module.declare_func_in_func(trt_ids.pad_f64, builder.func);
+            let n_dst_v = builder.ins().iconst(types::I64, n as i64);
+            let n_src_v = builder.ins().iconst(types::I64, n_src as i64);
+            let dst_shape_ptr = store_i64_array(builder, &rt.shape);
+            let src_shape_ptr = store_i64_array(builder, &src_ty.shape);
+            let rank_v = builder.ins().iconst(types::I64, rt.rank() as i64);
+            let low_ptr = store_i64_array(builder, low);
+            builder.ins().call(
+                func_ref,
+                &[
+                    dst,
+                    get(operand)?,
+                    n_dst_v,
+                    n_src_v,
+                    pad_scalar,
+                    dst_shape_ptr,
+                    src_shape_ptr,
+                    rank_v,
+                    low_ptr,
+                ],
+            );
+            Ok(vec![vec![dst]])
+        }
+
+        Instruction::DynamicSlice {
+            operand,
+            start_indices,
+            slice_sizes,
+        } => {
+            let src_ty = type_map.get(operand).cloned().unwrap_or(rt.clone());
+            let n_src = src_ty.num_elements();
+            let dst = alloc_slot(builder, n * elem_sz);
+            let func_ref = jit_module.declare_func_in_func(trt_ids.dynamic_slice_f64, builder.func);
+            let n_dst_v = builder.ins().iconst(types::I64, n as i64);
+            let n_src_v = builder.ins().iconst(types::I64, n_src as i64);
+            let shape_ptr = store_i64_array(builder, &src_ty.shape);
+            let rank_v = builder.ins().iconst(types::I64, src_ty.rank() as i64);
+            let sizes_ptr = store_i64_array(builder, slice_sizes);
+
+            let starts_ss = alloc_slot(builder, start_indices.len() * 8);
+            for (i, idx_vid) in start_indices.iter().enumerate() {
+                let idx_ptr = get(idx_vid)?;
+                let idx_et = type_map
+                    .get(idx_vid)
+                    .map(|t| t.element_type)
+                    .unwrap_or(ElementType::I64);
+                let ct = cranelift_type_for(idx_et);
+                let raw = builder.ins().load(ct, MemFlags::trusted(), idx_ptr, 0);
+                let idx_val = if ct == types::I32 {
+                    builder.ins().sextend(types::I64, raw)
+                } else {
+                    raw
+                };
+                builder
+                    .ins()
+                    .store(MemFlags::trusted(), idx_val, starts_ss, (i * 8) as i32);
+            }
+
+            builder.ins().call(
+                func_ref,
+                &[
+                    dst,
+                    get(operand)?,
+                    n_dst_v,
+                    n_src_v,
+                    shape_ptr,
+                    rank_v,
+                    starts_ss,
+                    sizes_ptr,
+                ],
+            );
+            Ok(vec![vec![dst]])
+        }
+
+        Instruction::DynamicUpdateSlice {
+            operand,
+            update,
+            start_indices,
+        } => {
+            let src_ty = type_map.get(operand).cloned().unwrap_or(rt.clone());
+            let upd_ty = type_map.get(update).cloned().unwrap_or(rt.clone());
+            let n_src = src_ty.num_elements();
+            let n_upd = upd_ty.num_elements();
+            let dst = alloc_slot(builder, n * elem_sz);
+            let func_ref =
+                jit_module.declare_func_in_func(trt_ids.dynamic_update_slice_f64, builder.func);
+            let n_src_v = builder.ins().iconst(types::I64, n_src as i64);
+            let n_upd_v = builder.ins().iconst(types::I64, n_upd as i64);
+            let shape_ptr = store_i64_array(builder, &src_ty.shape);
+            let rank_v = builder.ins().iconst(types::I64, src_ty.rank() as i64);
+            let upd_shape_ptr = store_i64_array(builder, &upd_ty.shape);
+
+            let starts_ss = alloc_slot(builder, start_indices.len() * 8);
+            for (i, idx_vid) in start_indices.iter().enumerate() {
+                let idx_ptr = get(idx_vid)?;
+                let idx_et = type_map
+                    .get(idx_vid)
+                    .map(|t| t.element_type)
+                    .unwrap_or(ElementType::I64);
+                let ct = cranelift_type_for(idx_et);
+                let raw = builder.ins().load(ct, MemFlags::trusted(), idx_ptr, 0);
+                let idx_val = if ct == types::I32 {
+                    builder.ins().sextend(types::I64, raw)
+                } else {
+                    raw
+                };
+                builder
+                    .ins()
+                    .store(MemFlags::trusted(), idx_val, starts_ss, (i * 8) as i32);
+            }
+
+            builder.ins().call(
+                func_ref,
+                &[
+                    dst,
+                    get(operand)?,
+                    get(update)?,
+                    n_src_v,
+                    n_upd_v,
+                    shape_ptr,
+                    rank_v,
+                    starts_ss,
+                    upd_shape_ptr,
+                ],
+            );
+            Ok(vec![vec![dst]])
+        }
+
+        Instruction::Gather {
+            operand,
+            indices,
+            dims,
+            slice_sizes,
+        } => {
+            let src_ty = type_map.get(operand).cloned().unwrap_or(rt.clone());
+            let idx_ty = type_map
+                .get(indices)
+                .cloned()
+                .unwrap_or(TensorType::scalar(ElementType::I64));
+            let n_out = rt.num_elements();
+            let n_idx = if !dims.collapsed_slice_dims.is_empty() {
+                idx_ty.shape.first().copied().unwrap_or(1) as usize
+            } else {
+                idx_ty.num_elements()
+            };
+            let row_size = if n_idx > 0 { n_out / n_idx } else { 1 };
+            let idx_ptr = get(indices)?;
+            let widened_idx = if matches!(idx_ty.element_type, ElementType::I32 | ElementType::UI32)
+            {
+                let wide_buf = alloc_slot(builder, n_idx * 8);
+                let widen_ref =
+                    jit_module.declare_func_in_func(trt_ids.widen_i32_to_i64, builder.func);
+                let n_idx_v2 = builder.ins().iconst(types::I64, n_idx as i64);
+                builder
+                    .ins()
+                    .call(widen_ref, &[wide_buf, idx_ptr, n_idx_v2]);
+                wide_buf
+            } else {
+                idx_ptr
+            };
+            let dst = alloc_slot(builder, n * elem_sz);
+            let func_ref = jit_module.declare_func_in_func(trt_ids.gather_f64, builder.func);
+            let n_src_v = builder
+                .ins()
+                .iconst(types::I64, src_ty.num_elements() as i64);
+            let n_idx_v = builder.ins().iconst(types::I64, n_idx as i64);
+            let row_v = builder.ins().iconst(types::I64, row_size as i64);
+            builder.ins().call(
+                func_ref,
+                &[dst, get(operand)?, n_src_v, widened_idx, n_idx_v, row_v],
+            );
+            Ok(vec![vec![dst]])
+        }
+
+        Instruction::Scatter {
+            operand,
+            indices,
+            updates,
+        } => {
+            let src_ty = type_map.get(operand).cloned().unwrap_or(rt.clone());
+            let idx_ty = type_map
+                .get(indices)
+                .cloned()
+                .unwrap_or(TensorType::scalar(ElementType::I64));
+            let upd_ty = type_map.get(updates).cloned().unwrap_or(rt.clone());
+            let n_src = src_ty.num_elements();
+            let n_updates = idx_ty.num_elements();
+            let inner_size = if n_updates > 0 {
+                upd_ty.num_elements() / n_updates
+            } else {
+                1
+            };
+            let idx_ptr = get(indices)?;
+            let widened_idx = if matches!(idx_ty.element_type, ElementType::I32 | ElementType::UI32)
+            {
+                let wide_buf = alloc_slot(builder, n_updates * 8);
+                let widen_ref =
+                    jit_module.declare_func_in_func(trt_ids.widen_i32_to_i64, builder.func);
+                let n_upd_v2 = builder.ins().iconst(types::I64, n_updates as i64);
+                builder
+                    .ins()
+                    .call(widen_ref, &[wide_buf, idx_ptr, n_upd_v2]);
+                wide_buf
+            } else {
+                idx_ptr
+            };
+            let dst = alloc_slot(builder, n * elem_sz);
+            let func_ref = jit_module.declare_func_in_func(trt_ids.scatter_f64, builder.func);
+            let n_src_v = builder.ins().iconst(types::I64, n_src as i64);
+            let n_upd_v = builder.ins().iconst(types::I64, n_updates as i64);
+            let inner_v = builder.ins().iconst(types::I64, inner_size as i64);
+            builder.ins().call(
+                func_ref,
+                &[
+                    dst,
+                    get(operand)?,
+                    n_src_v,
+                    widened_idx,
+                    get(updates)?,
+                    n_upd_v,
+                    inner_v,
+                ],
+            );
+            Ok(vec![vec![dst]])
+        }
+
+        Instruction::DotGeneral { lhs, rhs, dims } => {
+            let l_ty = type_map.get(lhs).cloned().unwrap_or(rt.clone());
+            let r_ty = type_map.get(rhs).cloned().unwrap_or(rt.clone());
+            if l_ty.rank() < 2 || r_ty.rank() < 2 {
+                return Err(format!(
+                    "mem: DotGeneral needs rank>=2 operands, got {:?} and {:?}",
+                    l_ty, r_ty
+                ));
+            }
+            let m = l_ty.shape[0] as usize;
+            let nn = r_ty.shape[r_ty.rank() - 1] as usize;
+            let k = if !dims.lhs_contracting.is_empty() {
+                l_ty.shape[dims.lhs_contracting[0] as usize] as usize
+            } else {
+                1
+            };
+            let out_size = m * nn * elem_sz;
+            let dst = alloc_slot(builder, out_size);
+            let func_ref = jit_module.declare_func_in_func(trt_ids.matmul_f64, builder.func);
+            let m_v = builder.ins().iconst(types::I64, m as i64);
+            let k_v = builder.ins().iconst(types::I64, k as i64);
+            let n_v = builder.ins().iconst(types::I64, nn as i64);
+            builder
+                .ins()
+                .call(func_ref, &[dst, get(lhs)?, get(rhs)?, m_v, k_v, n_v]);
+            Ok(vec![vec![dst]])
+        }
+
+        Instruction::Reduce {
+            operand,
+            init: _,
+            op,
+            dimensions: _,
+        } => {
+            let src_ty = type_map.get(operand).cloned().unwrap_or(rt.clone());
+            let func_id = match op {
+                ReduceOp::Add => trt_ids.reduce_sum_f64,
+                ReduceOp::Maximum => trt_ids.reduce_max_f64,
+                ReduceOp::Minimum => trt_ids.reduce_min_f64,
+            };
+            let n_in = src_ty.num_elements();
+            let n_out = n;
+            let inner = if n_out > 0 { n_in / n_out } else { n_in };
+            let dst = alloc_slot(builder, n_out * elem_sz);
+            let func_ref = jit_module.declare_func_in_func(func_id, builder.func);
+            let outer_v = builder.ins().iconst(types::I64, n_out as i64);
+            let inner_v = builder.ins().iconst(types::I64, inner as i64);
+            builder
+                .ins()
+                .call(func_ref, &[dst, get(operand)?, outer_v, inner_v]);
+            Ok(vec![vec![dst]])
+        }
+
+        Instruction::While {
+            cond_body,
+            loop_body,
+            init_values,
+        } => {
+            let mut slots: Vec<(cranelift_codegen::ir::StackSlot, TensorType)> = Vec::new();
+            for vid in init_values {
+                let ty = type_map
+                    .get(vid)
+                    .cloned()
+                    .unwrap_or(TensorType::scalar(ElementType::F64));
+                let byte_sz = ty.byte_size();
+                let ss = builder.create_sized_stack_slot(StackSlotData::new(
+                    StackSlotKind::ExplicitSlot,
+                    byte_sz as u32,
+                    3,
+                ));
+                let addr = builder.ins().stack_addr(ptr_type(), ss, 0);
+                let memcpy_ref = jit_module.declare_func_in_func(trt_ids.memcpy, builder.func);
+                let nb = builder.ins().iconst(types::I64, byte_sz as i64);
+                builder.ins().call(memcpy_ref, &[addr, get(vid)?, nb]);
+                slots.push((ss, ty));
+            }
+
+            let header = builder.create_block();
+            let body_blk = builder.create_block();
+            let exit = builder.create_block();
+            builder.ins().jump(header, &[]);
+
+            builder.switch_to_block(header);
+            let mut cond_vm = value_map.clone();
+            let mut cond_tm = type_map.clone();
+            for (i, (ss, ty)) in slots.iter().enumerate() {
+                let addr = builder.ins().stack_addr(ptr_type(), *ss, 0);
+                cond_vm.insert(ValueId(i as u32), vec![addr]);
+                cond_tm.insert(ValueId(i as u32), ty.clone());
+            }
+            lower_body_mem(
+                builder,
+                cond_body,
+                ir_module,
+                func_ids,
+                libm_ids,
+                trt_ids,
+                func_abis,
+                jit_module,
+                &mut cond_vm,
+                &mut cond_tm,
+            )?;
+
+            let cond_val = {
+                let mut cv = None;
+                for ir in cond_body.iter().rev() {
+                    if let Instruction::Return { operands } = &ir.instr {
+                        if let Some(vid) = operands.first() {
+                            let ptr = cond_vm.get(vid).and_then(|v| v.first().copied());
+                            if let Some(p) = ptr {
+                                cv = Some(builder.ins().load(types::I8, MemFlags::trusted(), p, 0));
+                            }
+                        }
+                        break;
+                    }
+                }
+                cv.ok_or("while: no condition value")?
+            };
+            builder.ins().brif(cond_val, body_blk, &[], exit, &[]);
+
+            builder.switch_to_block(body_blk);
+            builder.seal_block(body_blk);
+            let mut body_vm = value_map.clone();
+            let mut body_tm = type_map.clone();
+            for (i, (ss, ty)) in slots.iter().enumerate() {
+                let addr = builder.ins().stack_addr(ptr_type(), *ss, 0);
+                body_vm.insert(ValueId(i as u32), vec![addr]);
+                body_tm.insert(ValueId(i as u32), ty.clone());
+            }
+            lower_body_mem(
+                builder,
+                loop_body,
+                ir_module,
+                func_ids,
+                libm_ids,
+                trt_ids,
+                func_abis,
+                jit_module,
+                &mut body_vm,
+                &mut body_tm,
+            )?;
+
+            if let Some(ret_ir) = loop_body
+                .iter()
+                .rev()
+                .find(|ir| matches!(ir.instr, Instruction::Return { .. }))
+                && let Instruction::Return { operands } = &ret_ir.instr
+            {
+                let memcpy_ref = jit_module.declare_func_in_func(trt_ids.memcpy, builder.func);
+                for (vid, (ss, ty)) in operands.iter().zip(slots.iter()) {
+                    if let Some(vals) = body_vm.get(vid) {
+                        let addr = builder.ins().stack_addr(ptr_type(), *ss, 0);
+                        let nb = builder.ins().iconst(types::I64, ty.byte_size() as i64);
+                        builder.ins().call(memcpy_ref, &[addr, vals[0], nb]);
+                    }
+                }
+            }
+            builder.ins().jump(header, &[]);
+            builder.seal_block(header);
+
+            builder.switch_to_block(exit);
+            builder.seal_block(exit);
+
+            let mut result_groups = Vec::new();
+            for (i, rty) in result_types.iter().enumerate() {
+                if i < slots.len() {
+                    let (ss, _) = &slots[i];
+                    let addr = builder.ins().stack_addr(ptr_type(), *ss, 0);
+                    result_groups.push(vec![addr]);
+                }
+            }
+            Ok(result_groups)
+        }
+
+        Instruction::Iota { dimension } => {
+            let dst = alloc_slot(builder, n * elem_sz);
+            let fid = if is_float(rt.element_type) {
+                trt_ids.iota_nd_f64
+            } else {
+                trt_ids.iota_nd_i64
+            };
+            let func_ref = jit_module.declare_func_in_func(fid, builder.func);
+            let n_val = builder.ins().iconst(types::I64, n as i64);
+            let shape_ptr = store_i64_array(builder, &rt.shape);
+            let rank_v = builder.ins().iconst(types::I64, rt.rank() as i64);
+            let dim_v = builder.ins().iconst(types::I64, *dimension);
+            builder
+                .ins()
+                .call(func_ref, &[dst, n_val, shape_ptr, rank_v, dim_v]);
+            Ok(vec![vec![dst]])
+        }
+
+        Instruction::Call { callee, args } => {
+            let fid = func_ids
+                .get(callee)
+                .ok_or_else(|| format!("mem: unknown callee: {callee}"))?;
+            let callee_def = ir_module
+                .get_func(callee)
+                .ok_or_else(|| format!("mem: no func def for {callee}"))?;
+            let callee_abi = func_abis.get(callee).copied().unwrap_or(FuncAbi::Scalar);
+            let func_ref = jit_module.declare_func_in_func(*fid, builder.func);
+
+            if callee_abi == FuncAbi::Pointer {
+                let mut call_args: Vec<Value> = args.iter().map(get).collect::<Result<_, _>>()?;
+                let total_ret_bytes: usize =
+                    callee_def.result_types.iter().map(|t| t.byte_size()).sum();
+                let ret_buf = alloc_slot(builder, total_ret_bytes.max(8));
+                call_args.push(ret_buf);
+                builder.ins().call(func_ref, &call_args);
+
+                let mut result_groups = Vec::new();
+                let mut off = 0i64;
+                for rty in &callee_def.result_types {
+                    let addr = builder.ins().iadd_imm(ret_buf, off);
+                    result_groups.push(vec![addr]);
+                    off += rty.byte_size() as i64;
+                }
+                Ok(result_groups)
+            } else {
+                let callee_sret = needs_sret(&callee_def.result_types);
+                let mut call_args = Vec::new();
+                for (vid, (_pv, pty)) in args.iter().zip(callee_def.params.iter()) {
+                    let ptr = get(vid)?;
+                    let n_elem = pty.num_elements();
+                    let ct = cranelift_type_for(pty.element_type);
+                    let esz = pty.element_type.byte_size();
+                    for j in 0..n_elem {
+                        let v = builder
+                            .ins()
+                            .load(ct, MemFlags::trusted(), ptr, (j * esz) as i32);
+                        call_args.push(v);
+                    }
+                }
+
+                if callee_sret {
+                    let total_bytes: usize =
+                        callee_def.result_types.iter().map(|t| t.byte_size()).sum();
+                    let ret_buf = alloc_slot(builder, total_bytes);
+                    call_args.push(ret_buf);
+                    builder.ins().call(func_ref, &call_args);
+
+                    let mut result_groups = Vec::new();
+                    let mut byte_off = 0i64;
+                    for rty in &callee_def.result_types {
+                        let addr = builder.ins().iadd_imm(ret_buf, byte_off);
+                        result_groups.push(vec![addr]);
+                        byte_off += rty.byte_size() as i64;
+                    }
+                    Ok(result_groups)
+                } else {
+                    let call = builder.ins().call(func_ref, &call_args);
+                    let results: Vec<Value> = builder.inst_results(call).to_vec();
+
+                    let mut result_groups = Vec::new();
+                    let mut off = 0;
+                    for rty in &callee_def.result_types {
+                        let n_elem = rty.num_elements();
+                        let esz = rty.element_type.byte_size();
+                        let buf = alloc_slot(builder, n_elem * esz);
+                        for j in 0..n_elem {
+                            if off + j < results.len() {
+                                builder.ins().store(
+                                    MemFlags::trusted(),
+                                    results[off + j],
+                                    buf,
+                                    (j * esz) as i32,
+                                );
+                            }
+                        }
+                        off += n_elem;
+                        result_groups.push(vec![buf]);
+                    }
+                    Ok(result_groups)
+                }
+            }
+        }
+
+        Instruction::Atan2 { .. } => Err("mem: atan2 not yet supported".into()),
+        Instruction::Acos { .. } => Err("mem: acos not yet supported".into()),
+        Instruction::ErfInv { .. } => Err("mem: erf_inv not yet supported".into()),
+        Instruction::Tan { operand } => {
+            let dst = alloc_slot(builder, n * elem_sz);
+            let n_val = builder.ins().iconst(types::I64, n as i64);
+            trt_call(
+                builder,
+                jit_module,
+                trt_ids.tan_f64,
+                &[dst, get(operand)?, n_val],
+            );
+            Ok(vec![vec![dst]])
+        }
+        Instruction::Sign { operand } => {
+            let dst = alloc_slot(builder, n * elem_sz);
+            let n_val = builder.ins().iconst(types::I64, n as i64);
+            trt_call(
+                builder,
+                jit_module,
+                trt_ids.sign_f64,
+                &[dst, get(operand)?, n_val],
+            );
+            Ok(vec![vec![dst]])
+        }
+        Instruction::Remainder { lhs, rhs } if is_float(rt.element_type) => {
+            let dst = alloc_slot(builder, n * elem_sz);
+            let n_val = builder.ins().iconst(types::I64, n as i64);
+            trt_call(
+                builder,
+                jit_module,
+                trt_ids.rem_f64,
+                &[dst, get(lhs)?, get(rhs)?, n_val],
+            );
+            Ok(vec![vec![dst]])
+        }
+        Instruction::BitcastConvert { operand } => Ok(vec![vec![get(operand)?]]),
+        Instruction::RoundNearestEven { operand } => {
+            Err("mem: round_nearest_even not yet supported".into())
+        }
+        Instruction::Reverse { .. } => Err("mem: reverse not yet supported".into()),
+        Instruction::Clamp { .. } => Err("mem: clamp not yet supported".into()),
+        Instruction::Case { index, branches } => {
+            let idx_ptr = get(index)?;
+            let idx = builder
+                .ins()
+                .load(types::I64, MemFlags::trusted(), idx_ptr, 0);
+
+            let result_slots: Vec<_> = result_types
+                .iter()
+                .map(|rty| alloc_slot(builder, rty.byte_size()))
+                .collect();
+
+            let branch_blocks: Vec<Block> = (0..branches.len())
+                .map(|_| builder.create_block())
+                .collect();
+            let merge_block = builder.create_block();
+
+            let idx_ty = builder.func.dfg.value_type(idx);
+            let empty_args: &[BlockArg] = &[];
+            if branches.len() == 1 {
+                builder.ins().jump(branch_blocks[0], empty_args);
+            } else if branches.len() == 2 {
+                let zero = builder.ins().iconst(idx_ty, 0);
+                let cmp = builder.ins().icmp(IntCC::Equal, idx, zero);
+                builder.ins().brif(
+                    cmp,
+                    branch_blocks[0],
+                    empty_args,
+                    branch_blocks[1],
+                    empty_args,
+                );
+            } else {
+                for i in 0..branches.len() - 1 {
+                    let cmp_val = builder.ins().iconst(idx_ty, i as i64);
+                    let cmp = builder.ins().icmp(IntCC::Equal, idx, cmp_val);
+                    let next = if i == branches.len() - 2 {
+                        branch_blocks[branches.len() - 1]
+                    } else {
+                        builder.create_block()
+                    };
+                    builder
+                        .ins()
+                        .brif(cmp, branch_blocks[i], empty_args, next, empty_args);
+                    if i < branches.len() - 2 {
+                        builder.switch_to_block(next);
+                        builder.seal_block(next);
+                    }
+                }
+            }
+
+            let memcpy_ref = jit_module.declare_func_in_func(trt_ids.memcpy, builder.func);
+            for (bi, branch) in branches.iter().enumerate() {
+                builder.switch_to_block(branch_blocks[bi]);
+                builder.seal_block(branch_blocks[bi]);
+
+                let mut br_vm = value_map.clone();
+                let mut br_tm = type_map.clone();
+                lower_body_mem(
+                    builder, branch, ir_module, func_ids, libm_ids, trt_ids, func_abis, jit_module,
+                    &mut br_vm, &mut br_tm,
+                )?;
+
+                if let Some(ret_ir) = branch
+                    .iter()
+                    .rev()
+                    .find(|ir| matches!(ir.instr, Instruction::Return { .. }))
+                    && let Instruction::Return { operands } = &ret_ir.instr
+                {
+                    for (i, vid) in operands.iter().enumerate() {
+                        if let (Some(vals), Some(rty)) = (br_vm.get(vid), result_types.get(i)) {
+                            let nb = builder.ins().iconst(types::I64, rty.byte_size() as i64);
+                            builder
+                                .ins()
+                                .call(memcpy_ref, &[result_slots[i], vals[0], nb]);
+                        }
+                    }
+                }
+                builder.ins().jump(merge_block, empty_args);
+            }
+
+            builder.switch_to_block(merge_block);
+            builder.seal_block(merge_block);
+
+            Ok(result_slots.into_iter().map(|s| vec![s]).collect())
+        }
+        Instruction::CustomCall {
+            call_target,
+            operands,
+        } => Err(format!("mem: custom_call not yet supported: {call_target}")),
+
+        Instruction::Return { .. } => Ok(vec![]),
+
+        other => Err(format!("mem: unsupported instruction: {other:?}")),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn lower_callee_body(
     builder: &mut FunctionBuilder,
@@ -558,6 +2557,8 @@ fn lower_callee_body(
     ir_module: &crate::ir::Module,
     func_ids: &HashMap<String, FuncId>,
     libm_ids: &LibmIds,
+    trt_ids: &TensorRtIds,
+    func_abis: &HashMap<String, FuncAbi>,
     jit_module: &mut JITModule,
     block_params: &[Value],
     value_map: &mut HashMap<ValueId, TensorVals>,
@@ -586,6 +2587,8 @@ fn lower_callee_body(
         ir_module,
         func_ids,
         libm_ids,
+        trt_ids,
+        func_abis,
         jit_module,
         value_map,
         type_map,
@@ -634,6 +2637,8 @@ fn lower_body(
     ir_module: &crate::ir::Module,
     func_ids: &HashMap<String, FuncId>,
     libm_ids: &LibmIds,
+    trt_ids: &TensorRtIds,
+    func_abis: &HashMap<String, FuncAbi>,
     jit_module: &mut JITModule,
     value_map: &mut HashMap<ValueId, TensorVals>,
     type_map: &mut HashMap<ValueId, TensorType>,
@@ -652,6 +2657,8 @@ fn lower_body(
             ir_module,
             func_ids,
             libm_ids,
+            trt_ids,
+            func_abis,
             jit_module,
             value_map,
             type_map,
@@ -696,6 +2703,8 @@ fn lower_instruction(
     ir_module: &crate::ir::Module,
     func_ids: &HashMap<String, FuncId>,
     libm_ids: &LibmIds,
+    trt_ids: &TensorRtIds,
+    func_abis: &HashMap<String, FuncAbi>,
     jit_module: &mut JITModule,
     value_map: &mut HashMap<ValueId, TensorVals>,
     type_map: &mut HashMap<ValueId, TensorType>,
@@ -997,8 +3006,7 @@ fn lower_instruction(
                 for (flat_idx, slot) in next.iter_mut().enumerate().take(n) {
                     let coord_d = (flat_idx / strides[d]) % dim_size;
                     let reversed_coord = dim_size - 1 - coord_d;
-                    let src_idx =
-                        flat_idx - coord_d * strides[d] + reversed_coord * strides[d];
+                    let src_idx = flat_idx - coord_d * strides[d] + reversed_coord * strides[d];
                     *slot = result[src_idx];
                 }
                 result = next;
@@ -1014,10 +3022,7 @@ fn lower_instruction(
 
         Instruction::RoundNearestEven { operand } => {
             let vals = get_vals(value_map, operand)?;
-            let out: Vec<Value> = vals
-                .iter()
-                .map(|&v| builder.ins().nearest(v))
-                .collect();
+            let out: Vec<Value> = vals.iter().map(|&v| builder.ins().nearest(v)).collect();
             Ok(vec![out])
         }
 
@@ -1284,7 +3289,8 @@ fn lower_instruction(
 
         // ----- Function call -----
         Instruction::Call { callee, args } => lower_call(
-            builder, callee, args, ir_module, func_ids, jit_module, value_map,
+            builder, callee, args, ir_module, func_ids, func_abis, trt_ids, jit_module, value_map,
+            type_map,
         ),
 
         // ----- While loop (real Cranelift loop blocks) -----
@@ -1301,6 +3307,8 @@ fn lower_instruction(
             ir_module,
             func_ids,
             libm_ids,
+            trt_ids,
+            func_abis,
             jit_module,
             value_map,
             type_map,
@@ -1315,6 +3323,8 @@ fn lower_instruction(
             ir_module,
             func_ids,
             libm_ids,
+            trt_ids,
+            func_abis,
             jit_module,
             value_map,
             type_map,
@@ -1481,7 +3491,16 @@ fn lower_instruction(
         Instruction::CustomCall {
             call_target,
             operands,
-        } => lower_custom_call(builder, call_target, operands, result_types, value_map, type_map, jit_module, libm_ids),
+        } => lower_custom_call(
+            builder,
+            call_target,
+            operands,
+            result_types,
+            value_map,
+            type_map,
+            jit_module,
+            libm_ids,
+        ),
 
         Instruction::Return { .. } => Ok(vec![]),
     }
@@ -1501,6 +3520,8 @@ fn lower_while(
     ir_module: &crate::ir::Module,
     func_ids: &HashMap<String, FuncId>,
     libm_ids: &LibmIds,
+    trt_ids: &TensorRtIds,
+    func_abis: &HashMap<String, FuncAbi>,
     jit_module: &mut JITModule,
     value_map: &mut HashMap<ValueId, TensorVals>,
     type_map: &mut HashMap<ValueId, TensorType>,
@@ -1560,6 +3581,8 @@ fn lower_while(
         ir_module,
         func_ids,
         libm_ids,
+        trt_ids,
+        func_abis,
         jit_module,
         &mut cond_vmap,
         &mut cond_tmap,
@@ -1593,6 +3616,8 @@ fn lower_while(
         ir_module,
         func_ids,
         libm_ids,
+        trt_ids,
+        func_abis,
         jit_module,
         &mut body_vmap,
         &mut body_tmap,
@@ -1672,6 +3697,8 @@ fn lower_case(
     ir_module: &crate::ir::Module,
     func_ids: &HashMap<String, FuncId>,
     libm_ids: &LibmIds,
+    trt_ids: &TensorRtIds,
+    func_abis: &HashMap<String, FuncAbi>,
     jit_module: &mut JITModule,
     value_map: &mut HashMap<ValueId, TensorVals>,
     type_map: &mut HashMap<ValueId, TensorType>,
@@ -1743,6 +3770,8 @@ fn lower_case(
             ir_module,
             func_ids,
             libm_ids,
+            trt_ids,
+            func_abis,
             jit_module,
             &mut br_vmap,
             &mut br_tmap,
@@ -1776,14 +3805,18 @@ fn lower_case(
 // Function call lowering
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::too_many_arguments)]
 fn lower_call(
     builder: &mut FunctionBuilder,
     callee: &str,
     args: &[ValueId],
     ir_module: &crate::ir::Module,
     func_ids: &HashMap<String, FuncId>,
+    func_abis: &HashMap<String, FuncAbi>,
+    trt_ids: &TensorRtIds,
     jit_module: &mut JITModule,
     value_map: &mut HashMap<ValueId, TensorVals>,
+    type_map: &HashMap<ValueId, TensorType>,
 ) -> Result<Vec<TensorVals>, String> {
     let fid = func_ids
         .get(callee)
@@ -1791,8 +3824,63 @@ fn lower_call(
     let callee_def = ir_module
         .get_func(callee)
         .ok_or_else(|| format!("no func def for {callee}"))?;
+    let callee_abi = func_abis.get(callee).copied().unwrap_or(FuncAbi::Scalar);
 
     let func_ref = jit_module.declare_func_in_func(*fid, builder.func);
+
+    if callee_abi == FuncAbi::Pointer {
+        let mut call_args = Vec::new();
+        for (vid, (_param_vid, param_ty)) in args.iter().zip(callee_def.params.iter()) {
+            let v = get_vals(value_map, vid)?;
+            let byte_sz = param_ty.byte_size();
+            let ss = builder.create_sized_stack_slot(StackSlotData::new(
+                StackSlotKind::ExplicitSlot,
+                byte_sz as u32,
+                3,
+            ));
+            let addr = builder.ins().stack_addr(ptr_type(), ss, 0);
+            let elem_sz = param_ty.element_type.byte_size();
+            for (j, &val) in v.iter().enumerate() {
+                builder
+                    .ins()
+                    .store(MemFlags::trusted(), val, addr, (j * elem_sz) as i32);
+            }
+            call_args.push(addr);
+        }
+
+        let total_ret_bytes: usize = callee_def.result_types.iter().map(|t| t.byte_size()).sum();
+        let ret_ss = builder.create_sized_stack_slot(StackSlotData::new(
+            StackSlotKind::ExplicitSlot,
+            total_ret_bytes.max(8) as u32,
+            3,
+        ));
+        let ret_addr = builder.ins().stack_addr(ptr_type(), ret_ss, 0);
+        call_args.push(ret_addr);
+
+        let _call = builder.ins().call(func_ref, &call_args);
+
+        let mut result_groups = Vec::new();
+        let mut byte_offset = 0i32;
+        for ret_ty in &callee_def.result_types {
+            let n = ret_ty.num_elements();
+            let ct = cranelift_type_for(ret_ty.element_type);
+            let elem_sz = ret_ty.element_type.byte_size() as i32;
+            let mut group = Vec::new();
+            for j in 0..n {
+                let v = builder.ins().load(
+                    ct,
+                    MemFlags::trusted(),
+                    ret_addr,
+                    byte_offset + (j as i32 * elem_sz),
+                );
+                group.push(v);
+            }
+            byte_offset += (n as i32) * elem_sz;
+            result_groups.push(group);
+        }
+        return Ok(result_groups);
+    }
+
     let callee_sret = needs_sret(&callee_def.result_types);
 
     let mut call_args = Vec::new();
@@ -2014,9 +4102,7 @@ fn convert_value(
         (ElementType::UI32, ElementType::UI64) => builder.ins().uextend(types::I64, v),
         (ElementType::UI64, ElementType::F64) => builder.ins().fcvt_from_uint(types::F64, v),
         (ElementType::F64, ElementType::UI64) => builder.ins().fcvt_to_uint(types::I64, v),
-        (ElementType::I32, ElementType::F32) => {
-            builder.ins().fcvt_from_sint(types::F32, v)
-        }
+        (ElementType::I32, ElementType::F32) => builder.ins().fcvt_from_sint(types::F32, v),
         _ => v,
     }
 }
@@ -2537,7 +4623,9 @@ fn lower_dynamic_slice(
                 builder.ins().select(cmp, idx_i64, zero)
             };
             let clamped = {
-                let cmp = builder.ins().icmp(IntCC::SignedLessThan, clamped_lo, max_val);
+                let cmp = builder
+                    .ins()
+                    .icmp(IntCC::SignedLessThan, clamped_lo, max_val);
                 builder.ins().select(cmp, clamped_lo, max_val)
             };
             let stride_bytes = (strides[d] * elem_sz) as i64;
@@ -2607,7 +4695,9 @@ fn lower_dynamic_update_slice(
             builder.ins().select(cmp, idx_i64, zero)
         };
         let clamped = {
-            let cmp = builder.ins().icmp(IntCC::SignedLessThan, clamped_lo, max_val);
+            let cmp = builder
+                .ins()
+                .icmp(IntCC::SignedLessThan, clamped_lo, max_val);
             builder.ins().select(cmp, clamped_lo, max_val)
         };
         let stride_bytes = (strides[d] * elem_sz) as i64;
@@ -2644,18 +4734,19 @@ fn lower_custom_call(
     libm_ids: &LibmIds,
 ) -> Result<Vec<TensorVals>, String> {
     if call_target.starts_with("lapack_dgesdd") {
-        return lower_svd_custom_call(builder, operands, result_types, value_map, type_map, jit_module);
+        return lower_svd_custom_call(
+            builder,
+            operands,
+            result_types,
+            value_map,
+            type_map,
+            jit_module,
+        );
     }
     Err(format!("unsupported custom_call target: {call_target}"))
 }
 
-extern "C" fn svd_3x3(
-    a: *const f64,
-    u: *mut f64,
-    s: *mut f64,
-    vt: *mut f64,
-    info: *mut i32,
-) {
+extern "C" fn svd_3x3(a: *const f64, u: *mut f64, s: *mut f64, vt: *mut f64, info: *mut i32) {
     let a = unsafe { std::slice::from_raw_parts(a, 9) };
     let u_out = unsafe { std::slice::from_raw_parts_mut(u, 9) };
     let s_out = unsafe { std::slice::from_raw_parts_mut(s, 3) };
@@ -2666,16 +4757,8 @@ extern "C" fn svd_3x3(
     mat.copy_from_slice(a);
 
     // Jacobi SVD for small matrices
-    let mut u_mat = [
-        1.0, 0.0, 0.0,
-        0.0, 1.0, 0.0,
-        0.0, 0.0, 1.0,
-    ];
-    let mut v_mat = [
-        1.0, 0.0, 0.0,
-        0.0, 1.0, 0.0,
-        0.0, 0.0, 1.0,
-    ];
+    let mut u_mat = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+    let mut v_mat = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
 
     let idx = |r: usize, c: usize| r * m + c;
 
@@ -2777,7 +4860,10 @@ fn lower_svd_custom_call(
     let a_vals = get_vals(value_map, &operands[0])?;
     let n = (a_vals.len() as f64).sqrt() as usize;
     if n * n != a_vals.len() {
-        return Err(format!("SVD: non-square matrix ({} elements)", a_vals.len()));
+        return Err(format!(
+            "SVD: non-square matrix ({} elements)",
+            a_vals.len()
+        ));
     }
 
     let elem_sz = 8usize; // f64
@@ -2833,9 +4919,12 @@ fn lower_svd_custom_call(
     // Result 0: U (NxN f64) -- often the modified input
     let mut u_vals = Vec::with_capacity(n * n);
     for i in 0..(n * n) {
-        let v = builder
-            .ins()
-            .load(types::F64, MemFlags::trusted(), base, u_off + (i * elem_sz) as i32);
+        let v = builder.ins().load(
+            types::F64,
+            MemFlags::trusted(),
+            base,
+            u_off + (i * elem_sz) as i32,
+        );
         u_vals.push(v);
     }
     result_groups.push(u_vals);
@@ -2843,9 +4932,12 @@ fn lower_svd_custom_call(
     // Result 1: S (N f64)
     let mut s_vals = Vec::with_capacity(n);
     for i in 0..n {
-        let v = builder
-            .ins()
-            .load(types::F64, MemFlags::trusted(), base, s_off + (i * elem_sz) as i32);
+        let v = builder.ins().load(
+            types::F64,
+            MemFlags::trusted(),
+            base,
+            s_off + (i * elem_sz) as i32,
+        );
         s_vals.push(v);
     }
     result_groups.push(s_vals);
@@ -2853,9 +4945,12 @@ fn lower_svd_custom_call(
     // Result 2: Vt (NxN f64)
     let mut vt_vals = Vec::with_capacity(n * n);
     for i in 0..(n * n) {
-        let v = builder
-            .ins()
-            .load(types::F64, MemFlags::trusted(), base, vt_off + (i * elem_sz) as i32);
+        let v = builder.ins().load(
+            types::F64,
+            MemFlags::trusted(),
+            base,
+            vt_off + (i * elem_sz) as i32,
+        );
         vt_vals.push(v);
     }
     result_groups.push(vt_vals);

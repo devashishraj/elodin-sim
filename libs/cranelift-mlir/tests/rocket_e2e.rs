@@ -16,7 +16,6 @@ fn parse_rocket_mlir() {
 fn compile_rocket_mlir() {
     let mlir = include_str!("../testdata/rocket.stablehlo.mlir");
     let module = parse_module(mlir).expect("failed to parse");
-    let compiled =
-        cranelift_mlir::lower::compile_module(&module).expect("failed to compile");
+    let compiled = cranelift_mlir::lower::compile_module(&module).expect("failed to compile");
     assert!(!compiled.get_main_fn().is_null());
 }

@@ -11,7 +11,6 @@ fn parse_cube_sat_mlir() {
 fn compile_cube_sat_mlir() {
     let mlir = include_str!("../testdata/cube-sat.stablehlo.mlir");
     let module = parse_module(mlir).expect("failed to parse");
-    let compiled =
-        cranelift_mlir::lower::compile_module(&module).expect("failed to compile");
+    let compiled = cranelift_mlir::lower::compile_module(&module).expect("failed to compile");
     assert!(!compiled.get_main_fn().is_null());
 }

@@ -1,4 +1,4 @@
-use cranelift_mlir::lower::compile_module;
+use cranelift_mlir::lower::{CompileConfig, compile_module, compile_module_with_config};
 use cranelift_mlir::parser::parse_module;
 
 type TickFn = unsafe extern "C" fn(*const *const u8, *mut *mut u8);
@@ -6,6 +6,25 @@ type TickFn = unsafe extern "C" fn(*const *const u8, *mut *mut u8);
 fn run_mlir(mlir: &str, inputs: &[&[u8]], output_sizes: &[usize]) -> Vec<Vec<u8>> {
     let module = parse_module(mlir).expect("parse failed");
     let compiled = compile_module(&module).expect("compile failed");
+    let fn_ptr = compiled.get_main_fn();
+    let tick_fn: TickFn = unsafe { std::mem::transmute(fn_ptr) };
+
+    let input_ptrs: Vec<*const u8> = inputs.iter().map(|b| b.as_ptr()).collect();
+    let mut output_bufs: Vec<Vec<u8>> = output_sizes.iter().map(|&sz| vec![0u8; sz]).collect();
+    let mut output_ptrs: Vec<*mut u8> = output_bufs.iter_mut().map(|b| b.as_mut_ptr()).collect();
+
+    unsafe { tick_fn(input_ptrs.as_ptr(), output_ptrs.as_mut_ptr()) };
+
+    output_bufs
+}
+
+fn run_mlir_mem(mlir: &str, inputs: &[&[u8]], output_sizes: &[usize]) -> Vec<Vec<u8>> {
+    let module = parse_module(mlir).expect("parse failed");
+    let config = CompileConfig {
+        force_pointer_abi_main: true,
+    };
+    let compiled =
+        compile_module_with_config(&module, config).expect(&format!("compile failed (mem path)"));
     let fn_ptr = compiled.get_main_fn();
     let tick_fn: TickFn = unsafe { std::mem::transmute(fn_ptr) };
 
@@ -131,6 +150,22 @@ module @module {
     let in0 = f64_buf(&[1.0, 2.0, 3.0]);
     let in1 = f64_buf(&[4.0, 5.0, 6.0]);
     let out = run_mlir(mlir, &[&in0, &in1], &[24]);
+    assert_f64s_close(&read_f64s(&out[0]), &[5.0, 7.0, 9.0]);
+}
+
+#[test]
+fn test_add_mem() {
+    let mlir = r#"
+module @module {
+  func.func public @main(%arg0: tensor<3xf64>, %arg1: tensor<3xf64>) -> tensor<3xf64> {
+    %0 = stablehlo.add %arg0, %arg1 : tensor<3xf64>
+    return %0 : tensor<3xf64>
+  }
+}
+"#;
+    let in0 = f64_buf(&[1.0, 2.0, 3.0]);
+    let in1 = f64_buf(&[4.0, 5.0, 6.0]);
+    let out = run_mlir_mem(mlir, &[&in0, &in1], &[24]);
     assert_f64s_close(&read_f64s(&out[0]), &[5.0, 7.0, 9.0]);
 }
 
@@ -997,7 +1032,11 @@ module @module {
         .map(|c| u32::from_le_bytes(c.try_into().unwrap()))
         .collect();
     let sum = i64::from_le_bytes(out[1].as_slice().try_into().unwrap());
-    assert_eq!(seed, vec![42, 99], "First %c definition corrupted by redefinition");
+    assert_eq!(
+        seed,
+        vec![42, 99],
+        "First %c definition corrupted by redefinition"
+    );
     assert_eq!(sum, 17, "Second %c definition incorrect");
 }
 
@@ -1027,7 +1066,11 @@ module @module {
   }
 }
 "#;
-    let in0 = f64_buf(&[0.0, std::f64::consts::FRAC_PI_4, -std::f64::consts::FRAC_PI_4]);
+    let in0 = f64_buf(&[
+        0.0,
+        std::f64::consts::FRAC_PI_4,
+        -std::f64::consts::FRAC_PI_4,
+    ]);
     let out = run_mlir(mlir, &[&in0], &[24]);
     let result = read_f64s(&out[0]);
     assert!(result[0].abs() < 1e-15);
@@ -1104,7 +1147,9 @@ module @module {
 }
 "#;
     // 4x3 matrix: row0=[1,2,3], row1=[4,5,6], row2=[7,8,9], row3=[10,11,12]
-    let data = f64_buf(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0]);
+    let data = f64_buf(&[
+        1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0,
+    ]);
     // Index 10 is way out of bounds (max valid = 3), should clamp to row 3
     let idx = i32_buf(&[10]);
     let out = run_mlir(mlir, &[&data, &idx], &[24]);
@@ -1114,4 +1159,639 @@ module @module {
     let idx_neg = i32_buf(&[-5]);
     let out_neg = run_mlir(mlir, &[&data, &idx_neg], &[24]);
     assert_f64s_close(&read_f64s(&out_neg[0]), &[1.0, 2.0, 3.0]);
+}
+
+// ---- Pointer-ABI (memory-backed) path tests ----
+
+fn mem_binop_test(op: &str, a: &[f64], b: &[f64], expected: &[f64]) {
+    let n = a.len();
+    let mlir = format!(
+        r#"module @module {{
+  func.func public @main(%arg0: tensor<{n}xf64>, %arg1: tensor<{n}xf64>) -> tensor<{n}xf64> {{
+    %0 = stablehlo.{op} %arg0, %arg1 : tensor<{n}xf64>
+    return %0 : tensor<{n}xf64>
+  }}
+}}"#
+    );
+    let in0 = f64_buf(a);
+    let in1 = f64_buf(b);
+    let out = run_mlir_mem(&mlir, &[&in0, &in1], &[n * 8]);
+    assert_f64s_close(&read_f64s(&out[0]), expected);
+}
+
+fn mem_unop_test(op: &str, a: &[f64], expected: &[f64]) {
+    let n = a.len();
+    let mlir = format!(
+        r#"module @module {{
+  func.func public @main(%arg0: tensor<{n}xf64>) -> tensor<{n}xf64> {{
+    %0 = stablehlo.{op} %arg0 : tensor<{n}xf64>
+    return %0 : tensor<{n}xf64>
+  }}
+}}"#
+    );
+    let in0 = f64_buf(a);
+    let out = run_mlir_mem(&mlir, &[&in0], &[n * 8]);
+    assert_f64s_close(&read_f64s(&out[0]), expected);
+}
+
+#[test]
+fn test_subtract_mem() {
+    mem_binop_test(
+        "subtract",
+        &[5.0, 7.0, 9.0],
+        &[1.0, 2.0, 3.0],
+        &[4.0, 5.0, 6.0],
+    );
+}
+
+#[test]
+fn test_multiply_mem() {
+    mem_binop_test(
+        "multiply",
+        &[2.0, 3.0, 4.0],
+        &[5.0, 6.0, 7.0],
+        &[10.0, 18.0, 28.0],
+    );
+}
+
+#[test]
+fn test_divide_mem() {
+    mem_binop_test(
+        "divide",
+        &[10.0, 18.0, 28.0],
+        &[2.0, 3.0, 4.0],
+        &[5.0, 6.0, 7.0],
+    );
+}
+
+#[test]
+fn test_maximum_mem() {
+    mem_binop_test(
+        "maximum",
+        &[1.0, 5.0, 3.0],
+        &[4.0, 2.0, 6.0],
+        &[4.0, 5.0, 6.0],
+    );
+}
+
+#[test]
+fn test_minimum_mem() {
+    mem_binop_test(
+        "minimum",
+        &[1.0, 5.0, 3.0],
+        &[4.0, 2.0, 6.0],
+        &[1.0, 2.0, 3.0],
+    );
+}
+
+#[test]
+fn test_negate_mem() {
+    mem_unop_test("negate", &[1.0, -2.0, 3.0], &[-1.0, 2.0, -3.0]);
+}
+
+#[test]
+fn test_sqrt_mem() {
+    mem_unop_test("sqrt", &[4.0, 9.0, 16.0], &[2.0, 3.0, 4.0]);
+}
+
+#[test]
+fn test_floor_mem() {
+    mem_unop_test("floor", &[1.7, 2.3, -0.5], &[1.0, 2.0, -1.0]);
+}
+
+#[test]
+fn test_sine_mem() {
+    mem_unop_test("sine", &[0.0, std::f64::consts::FRAC_PI_2], &[0.0, 1.0]);
+}
+
+#[test]
+fn test_cosine_mem() {
+    mem_unop_test("cosine", &[0.0, std::f64::consts::PI], &[1.0, -1.0]);
+}
+
+#[test]
+fn test_exponential_mem() {
+    mem_unop_test("exponential", &[0.0, 1.0], &[1.0, std::f64::consts::E]);
+}
+
+#[test]
+fn test_log_mem() {
+    mem_unop_test("log", &[1.0, std::f64::consts::E], &[0.0, 1.0]);
+}
+
+#[test]
+fn test_tanh_mem() {
+    mem_unop_test("tanh", &[0.0], &[0.0]);
+}
+
+#[test]
+fn test_abs_mem() {
+    mem_unop_test("abs", &[-3.0, 0.0, 5.0], &[3.0, 0.0, 5.0]);
+}
+
+#[test]
+fn test_power_mem() {
+    mem_binop_test("power", &[2.0, 3.0], &[3.0, 2.0], &[8.0, 9.0]);
+}
+
+#[test]
+fn test_reshape_mem() {
+    let mlir = r#"
+module @module {
+  func.func public @main(%arg0: tensor<6xf64>) -> tensor<2x3xf64> {
+    %0 = stablehlo.reshape %arg0 : (tensor<6xf64>) -> tensor<2x3xf64>
+    return %0 : tensor<2x3xf64>
+  }
+}
+"#;
+    let in0 = f64_buf(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+    let out = run_mlir_mem(mlir, &[&in0], &[48]);
+    assert_f64s_close(&read_f64s(&out[0]), &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+}
+
+#[test]
+fn test_constant_mem() {
+    let mlir = r#"
+module @module {
+  func.func public @main() -> tensor<3xf64> {
+    %0 = stablehlo.constant dense<[1.0, 2.0, 3.0]> : tensor<3xf64>
+    return %0 : tensor<3xf64>
+  }
+}
+"#;
+    let out = run_mlir_mem(mlir, &[], &[24]);
+    assert_f64s_close(&read_f64s(&out[0]), &[1.0, 2.0, 3.0]);
+}
+
+#[test]
+fn test_compare_lt_mem() {
+    let mlir = r#"
+module @module {
+  func.func public @main(%arg0: tensor<3xf64>, %arg1: tensor<3xf64>) -> tensor<3xi1> {
+    %0 = stablehlo.compare LT, %arg0, %arg1, FLOAT : (tensor<3xf64>, tensor<3xf64>) -> tensor<3xi1>
+    return %0 : tensor<3xi1>
+  }
+}
+"#;
+    let in0 = f64_buf(&[1.0, 5.0, 3.0]);
+    let in1 = f64_buf(&[2.0, 4.0, 3.0]);
+    let out = run_mlir_mem(mlir, &[&in0, &in1], &[3]);
+    assert_eq!(out[0], vec![1, 0, 0]);
+}
+
+#[test]
+fn test_select_mem() {
+    let mlir = r#"
+module @module {
+  func.func public @main(%arg0: tensor<3xi1>, %arg1: tensor<3xf64>, %arg2: tensor<3xf64>) -> tensor<3xf64> {
+    %0 = stablehlo.select %arg0, %arg1, %arg2 : (tensor<3xi1>, tensor<3xf64>, tensor<3xf64>) -> tensor<3xf64>
+    return %0 : tensor<3xf64>
+  }
+}
+"#;
+    let cond = vec![1u8, 0, 1];
+    let in1 = f64_buf(&[10.0, 20.0, 30.0]);
+    let in2 = f64_buf(&[100.0, 200.0, 300.0]);
+    let out = run_mlir_mem(mlir, &[&cond, &in1, &in2], &[24]);
+    assert_f64s_close(&read_f64s(&out[0]), &[10.0, 200.0, 30.0]);
+}
+
+#[test]
+fn test_convert_i64_to_f64_mem() {
+    let mlir = r#"
+module @module {
+  func.func public @main(%arg0: tensor<3xi64>) -> tensor<3xf64> {
+    %0 = stablehlo.convert %arg0 : (tensor<3xi64>) -> tensor<3xf64>
+    return %0 : tensor<3xf64>
+  }
+}
+"#;
+    let in0 = i64_buf(&[1, 2, 3]);
+    let out = run_mlir_mem(mlir, &[&in0], &[24]);
+    assert_f64s_close(&read_f64s(&out[0]), &[1.0, 2.0, 3.0]);
+}
+
+#[test]
+fn test_iota_mem() {
+    let mlir = r#"
+module @module {
+  func.func public @main() -> tensor<3x2xi64> {
+    %0 = stablehlo.iota dim = 1 : tensor<3x2xi64>
+    return %0 : tensor<3x2xi64>
+  }
+}
+"#;
+    let out = run_mlir_mem(mlir, &[], &[48]);
+    assert_eq!(read_i64s(&out[0]), vec![0, 1, 0, 1, 0, 1]);
+}
+
+#[test]
+fn test_broadcast_in_dim_mem() {
+    let mlir = r#"
+module @module {
+  func.func public @main(%arg0: tensor<3xf64>) -> tensor<2x3xf64> {
+    %0 = stablehlo.broadcast_in_dim %arg0, dims = [1] : (tensor<3xf64>) -> tensor<2x3xf64>
+    return %0 : tensor<2x3xf64>
+  }
+}
+"#;
+    let in0 = f64_buf(&[1.0, 2.0, 3.0]);
+    let out = run_mlir_mem(mlir, &[&in0], &[48]);
+    assert_f64s_close(&read_f64s(&out[0]), &[1.0, 2.0, 3.0, 1.0, 2.0, 3.0]);
+}
+
+#[test]
+fn test_transpose_2d_mem() {
+    let mlir = r#"
+module @module {
+  func.func public @main(%arg0: tensor<2x3xf64>) -> tensor<3x2xf64> {
+    %0 = stablehlo.transpose %arg0, dims = [1, 0] : (tensor<2x3xf64>) -> tensor<3x2xf64>
+    return %0 : tensor<3x2xf64>
+  }
+}
+"#;
+    let in0 = f64_buf(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+    let out = run_mlir_mem(mlir, &[&in0], &[48]);
+    assert_f64s_close(&read_f64s(&out[0]), &[1.0, 4.0, 2.0, 5.0, 3.0, 6.0]);
+}
+
+#[test]
+fn test_slice_mem() {
+    let mlir = r#"
+module @module {
+  func.func public @main(%arg0: tensor<5xf64>) -> tensor<3xf64> {
+    %0 = stablehlo.slice %arg0 [1:4] : (tensor<5xf64>) -> tensor<3xf64>
+    return %0 : tensor<3xf64>
+  }
+}
+"#;
+    let in0 = f64_buf(&[10.0, 20.0, 30.0, 40.0, 50.0]);
+    let out = run_mlir_mem(mlir, &[&in0], &[24]);
+    assert_f64s_close(&read_f64s(&out[0]), &[20.0, 30.0, 40.0]);
+}
+
+#[test]
+fn test_concatenate_mem() {
+    let mlir = r#"
+module @module {
+  func.func public @main(%arg0: tensor<2xf64>, %arg1: tensor<3xf64>) -> tensor<5xf64> {
+    %0 = stablehlo.concatenate %arg0, %arg1, dim = 0 : (tensor<2xf64>, tensor<3xf64>) -> tensor<5xf64>
+    return %0 : tensor<5xf64>
+  }
+}
+"#;
+    let in0 = f64_buf(&[1.0, 2.0]);
+    let in1 = f64_buf(&[3.0, 4.0, 5.0]);
+    let out = run_mlir_mem(mlir, &[&in0, &in1], &[40]);
+    assert_f64s_close(&read_f64s(&out[0]), &[1.0, 2.0, 3.0, 4.0, 5.0]);
+}
+
+#[test]
+fn test_dynamic_slice_mem() {
+    let mlir = r#"
+module @module {
+  func.func public @main(%arg0: tensor<5xf64>, %arg1: tensor<i64>) -> tensor<3xf64> {
+    %0 = stablehlo.dynamic_slice %arg0, %arg1, sizes = [3] : (tensor<5xf64>, tensor<i64>) -> tensor<3xf64>
+    return %0 : tensor<3xf64>
+  }
+}
+"#;
+    let data = f64_buf(&[10.0, 20.0, 30.0, 40.0, 50.0]);
+    let idx = i64_buf(&[1]);
+    let out = run_mlir_mem(mlir, &[&data, &idx], &[24]);
+    assert_f64s_close(&read_f64s(&out[0]), &[20.0, 30.0, 40.0]);
+}
+
+#[test]
+fn test_dynamic_update_slice_mem() {
+    let mlir = r#"
+module @module {
+  func.func public @main(%arg0: tensor<5xf64>, %arg1: tensor<2xf64>, %arg2: tensor<i64>) -> tensor<5xf64> {
+    %0 = stablehlo.dynamic_update_slice %arg0, %arg1, %arg2 : (tensor<5xf64>, tensor<2xf64>, tensor<i64>) -> tensor<5xf64>
+    return %0 : tensor<5xf64>
+  }
+}
+"#;
+    let data = f64_buf(&[1.0, 2.0, 3.0, 4.0, 5.0]);
+    let upd = f64_buf(&[90.0, 91.0]);
+    let idx = i64_buf(&[2]);
+    let out = run_mlir_mem(mlir, &[&data, &upd, &idx], &[40]);
+    assert_f64s_close(&read_f64s(&out[0]), &[1.0, 2.0, 90.0, 91.0, 5.0]);
+}
+
+#[test]
+fn test_dot_general_matmul_mem() {
+    let mlir = r#"
+module @module {
+  func.func public @main(%arg0: tensor<2x3xf64>, %arg1: tensor<3x2xf64>) -> tensor<2x2xf64> {
+    %0 = stablehlo.dot_general %arg0, %arg1,
+      contracting_dims = [1] x [0] :
+      (tensor<2x3xf64>, tensor<3x2xf64>) -> tensor<2x2xf64>
+    return %0 : tensor<2x2xf64>
+  }
+}
+"#;
+    let a = f64_buf(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+    let b = f64_buf(&[7.0, 8.0, 9.0, 10.0, 11.0, 12.0]);
+    let out = run_mlir_mem(mlir, &[&a, &b], &[32]);
+    assert_f64s_close(&read_f64s(&out[0]), &[58.0, 64.0, 139.0, 154.0]);
+}
+
+#[test]
+fn test_reduce_sum_mem() {
+    let mlir = r#"
+module @module {
+  func.func public @main(%arg0: tensor<6xf64>) -> tensor<2xf64> {
+    %0 = stablehlo.reshape %arg0 : (tensor<6xf64>) -> tensor<2x3xf64>
+    %init = stablehlo.constant dense<0.0> : tensor<f64>
+    %1 = stablehlo.reduce(%0 init: %init) applies stablehlo.add across dimensions = [1] : (tensor<2x3xf64>, tensor<f64>) -> tensor<2xf64>
+    return %1 : tensor<2xf64>
+  }
+}
+"#;
+    let in0 = f64_buf(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+    let out = run_mlir_mem(mlir, &[&in0], &[16]);
+    assert_f64s_close(&read_f64s(&out[0]), &[6.0, 15.0]);
+}
+
+#[test]
+fn test_while_mem_count1() {
+    let mlir = r#"
+module @module {
+  func.func public @main(%arg0: tensor<f64>) -> tensor<f64> {
+    %c0 = stablehlo.constant dense<0> : tensor<i64>
+    %0:2 = stablehlo.while(%iterArg = %arg0, %iterArg_0 = %c0) : tensor<f64>, tensor<i64>
+      cond {
+        %limit = stablehlo.constant dense<1> : tensor<i64>
+        %cmp = stablehlo.compare LT, %iterArg_0, %limit, SIGNED : (tensor<i64>, tensor<i64>) -> tensor<i1>
+        stablehlo.return %cmp : tensor<i1>
+      } do {
+        %inc = stablehlo.constant dense<10.0> : tensor<f64>
+        %one = stablehlo.constant dense<1> : tensor<i64>
+        %new_val = stablehlo.add %iterArg, %inc : tensor<f64>
+        %new_idx = stablehlo.add %iterArg_0, %one : tensor<i64>
+        stablehlo.return %new_val, %new_idx : tensor<f64>, tensor<i64>
+      }
+    return %0#0 : tensor<f64>
+  }
+}
+"#;
+    let in0 = f64_buf(&[5.0]);
+    let out = run_mlir_mem(mlir, &[&in0], &[8]);
+    assert_f64s_close(&read_f64s(&out[0]), &[15.0]);
+}
+
+#[test]
+fn test_while_mem() {
+    let mlir = r#"
+module @module {
+  func.func public @main(%arg0: tensor<3xf64>) -> tensor<3xf64> {
+    %c0 = stablehlo.constant dense<0> : tensor<i64>
+    %0:2 = stablehlo.while(%iterArg = %arg0, %iterArg_0 = %c0) : tensor<3xf64>, tensor<i64>
+      cond {
+        %limit = stablehlo.constant dense<3> : tensor<i64>
+        %cmp = stablehlo.compare LT, %iterArg_0, %limit, SIGNED : (tensor<i64>, tensor<i64>) -> tensor<i1>
+        stablehlo.return %cmp : tensor<i1>
+      } do {
+        %inc = stablehlo.constant dense<[1.0, 1.0, 1.0]> : tensor<3xf64>
+        %one = stablehlo.constant dense<1> : tensor<i64>
+        %new_val = stablehlo.add %iterArg, %inc : tensor<3xf64>
+        %new_idx = stablehlo.add %iterArg_0, %one : tensor<i64>
+        stablehlo.return %new_val, %new_idx : tensor<3xf64>, tensor<i64>
+      }
+    return %0#0 : tensor<3xf64>
+  }
+}
+"#;
+    let in0 = f64_buf(&[10.0, 20.0, 30.0]);
+    let out = run_mlir_mem(mlir, &[&in0], &[24]);
+    assert_f64s_close(&read_f64s(&out[0]), &[13.0, 23.0, 33.0]);
+}
+
+#[test]
+fn test_broadcast_i32_1d_to_2d_mem() {
+    let mlir = r#"
+module @module {
+  func.func public @main(%arg0: tensor<3xi32>) -> tensor<3x1xi32> {
+    %0 = stablehlo.broadcast_in_dim %arg0, dims = [0] : (tensor<3xi32>) -> tensor<3x1xi32>
+    return %0 : tensor<3x1xi32>
+  }
+}
+"#;
+    let in0 = i32_buf(&[10, 20, 30]);
+    let out = run_mlir_mem(mlir, &[&in0], &[12]);
+    let result: Vec<i32> = out[0]
+        .chunks_exact(4)
+        .map(|c| i32::from_le_bytes(c.try_into().unwrap()))
+        .collect();
+    assert_eq!(result, vec![10, 20, 30]);
+}
+
+#[test]
+fn test_gather_with_i32_indices_mem() {
+    let mlir = r#"
+module @module {
+  func.func public @main(%arg0: tensor<5xf64>, %arg1: tensor<3xi32>) -> tensor<3xf64> {
+    %idx = stablehlo.broadcast_in_dim %arg1, dims = [0] : (tensor<3xi32>) -> tensor<3x1xi32>
+    %0 = "stablehlo.gather"(%arg0, %idx) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0], start_index_map = [0], index_vector_dim = 1>, indices_are_sorted = false, slice_sizes = array<i64: 1>}> : (tensor<5xf64>, tensor<3x1xi32>) -> tensor<3xf64>
+    return %0 : tensor<3xf64>
+  }
+}
+"#;
+    let data = f64_buf(&[10.0, 20.0, 30.0, 40.0, 50.0]);
+    let indices = i32_buf(&[0, 2, 4]);
+    let out = run_mlir_mem(mlir, &[&data, &indices], &[24]);
+    let result = read_f64s(&out[0]);
+    assert!(
+        !result.iter().any(|v| v.is_nan()),
+        "gather with i32 indices produced NaN: {result:?}"
+    );
+    assert_f64s_close(&result, &[10.0, 30.0, 50.0]);
+}
+
+// ---- Drone @inner function regression test ----
+
+#[test]
+fn test_drone_inner_mem() {
+    // This is the exact @inner function from the drone MLIR, inlined into @main.
+    // It builds a 22x3 lookup table from 4 constant matrices, then uses
+    // dynamic_slice with i32 indices to select a row.
+    // With index=2, scale=1.0: row 2 of table = [-0.3, 0.4, 0.0] (from cst_2)
+    let mlir = r#"
+module @module {
+  func.func public @main(%arg0: tensor<i64>, %arg1: tensor<f64>) -> tensor<3xf64> {
+    %cst = stablehlo.constant dense<[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.3, 0.0], [0.0, -0.2, 0.0], [0.0, -0.2, 0.0], [0.0, 0.0, 0.0]]> : tensor<6x3xf64>
+    %cst_0 = stablehlo.constant dense<[[0.0, 0.0, 0.0], [-0.2, 0.0, 0.0], [0.4, 0.0, 0.0], [-0.2, 0.0, 0.0], [0.0, 0.0, 0.0]]> : tensor<5x3xf64>
+    %cst_1 = stablehlo.constant dense<[[0.0, 0.0, 0.0], [0.0, 0.0, 0.1], [0.0, 0.0, 0.1], [0.0, 0.0, -0.2], [0.0, 0.0, -0.2], [0.0, 0.0, 0.0]]> : tensor<6x3xf64>
+    %cst_2 = stablehlo.constant dense<[[0.0, 0.0, 0.0], [0.2, 0.4, 0.0], [-0.3, 0.4, 0.0], [0.1, 0.1, 0.0], [0.3, -0.4, 0.0]]> : tensor<5x3xf64>
+    %0 = stablehlo.concatenate %cst_2, %cst, %cst_0, %cst_1, dim = 0 : (tensor<5x3xf64>, tensor<6x3xf64>, tensor<5x3xf64>, tensor<6x3xf64>) -> tensor<22x3xf64>
+    %1 = stablehlo.convert %arg0 : (tensor<i64>) -> tensor<f64>
+    %2 = stablehlo.multiply %1, %arg1 : tensor<f64>
+    %3 = stablehlo.convert %2 : (tensor<f64>) -> tensor<i32>
+    %c = stablehlo.constant dense<0> : tensor<i32>
+    %4 = stablehlo.compare LT, %3, %c, SIGNED : (tensor<i32>, tensor<i32>) -> tensor<i1>
+    %c_3 = stablehlo.constant dense<22> : tensor<i32>
+    %5 = stablehlo.add %3, %c_3 : tensor<i32>
+    %6 = stablehlo.select %4, %5, %3 : tensor<i1>, tensor<i32>
+    %c_4 = stablehlo.constant dense<0> : tensor<i32>
+    %7 = stablehlo.dynamic_slice %0, %6, %c_4, sizes = [1, 3] : (tensor<22x3xf64>, tensor<i32>, tensor<i32>) -> tensor<1x3xf64>
+    %8 = stablehlo.reshape %7 : (tensor<1x3xf64>) -> tensor<3xf64>
+    return %8 : tensor<3xf64>
+  }
+}
+"#;
+    // index=2, scale=1.0 -> row 2 of concatenated table (cst_2 row 2) = [-0.3, 0.4, 0.0]
+    let idx = i64_buf(&[2]);
+    let scale = f64_buf(&[1.0]);
+    let out = run_mlir_mem(mlir, &[&idx, &scale], &[24]);
+    let result = read_f64s(&out[0]);
+    assert!(
+        !result.iter().any(|v| v.is_nan()),
+        "drone @inner produced NaN: {result:?}"
+    );
+    assert_f64s_close(&result, &[-0.3, 0.4, 0.0]);
+}
+
+#[test]
+fn test_drone_inner_cross_abi() {
+    // Test the cross-ABI boundary: @main (scalar) calls @inner (pointer ABI)
+    // @inner has tensor<22x3xf64> (66 elements > 64 threshold) so it's pointer ABI
+    // @main passes scalar args, @inner returns tensor<3xf64>
+    let mlir = r#"
+module @module {
+  func.func public @main(%arg0: tensor<i64>, %arg1: tensor<f64>) -> tensor<3xf64> {
+    %0 = call @inner(%arg0, %arg1) : (tensor<i64>, tensor<f64>) -> tensor<3xf64>
+    return %0 : tensor<3xf64>
+  }
+  func.func private @inner(%arg0: tensor<i64>, %arg1: tensor<f64>) -> tensor<3xf64> {
+    %cst = stablehlo.constant dense<[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.3, 0.0], [0.0, -0.2, 0.0], [0.0, -0.2, 0.0], [0.0, 0.0, 0.0]]> : tensor<6x3xf64>
+    %cst_0 = stablehlo.constant dense<[[0.0, 0.0, 0.0], [-0.2, 0.0, 0.0], [0.4, 0.0, 0.0], [-0.2, 0.0, 0.0], [0.0, 0.0, 0.0]]> : tensor<5x3xf64>
+    %cst_1 = stablehlo.constant dense<[[0.0, 0.0, 0.0], [0.0, 0.0, 0.1], [0.0, 0.0, 0.1], [0.0, 0.0, -0.2], [0.0, 0.0, -0.2], [0.0, 0.0, 0.0]]> : tensor<6x3xf64>
+    %cst_2 = stablehlo.constant dense<[[0.0, 0.0, 0.0], [0.2, 0.4, 0.0], [-0.3, 0.4, 0.0], [0.1, 0.1, 0.0], [0.3, -0.4, 0.0]]> : tensor<5x3xf64>
+    %0 = stablehlo.concatenate %cst_2, %cst, %cst_0, %cst_1, dim = 0 : (tensor<5x3xf64>, tensor<6x3xf64>, tensor<5x3xf64>, tensor<6x3xf64>) -> tensor<22x3xf64>
+    %1 = stablehlo.convert %arg0 : (tensor<i64>) -> tensor<f64>
+    %2 = stablehlo.multiply %1, %arg1 : tensor<f64>
+    %3 = stablehlo.convert %2 : (tensor<f64>) -> tensor<i32>
+    %c = stablehlo.constant dense<0> : tensor<i32>
+    %4 = stablehlo.compare LT, %3, %c, SIGNED : (tensor<i32>, tensor<i32>) -> tensor<i1>
+    %c_3 = stablehlo.constant dense<22> : tensor<i32>
+    %5 = stablehlo.add %3, %c_3 : tensor<i32>
+    %6 = stablehlo.select %4, %5, %3 : tensor<i1>, tensor<i32>
+    %c_4 = stablehlo.constant dense<0> : tensor<i32>
+    %7 = stablehlo.dynamic_slice %0, %6, %c_4, sizes = [1, 3] : (tensor<22x3xf64>, tensor<i32>, tensor<i32>) -> tensor<1x3xf64>
+    %8 = stablehlo.reshape %7 : (tensor<1x3xf64>) -> tensor<3xf64>
+    return %8 : tensor<3xf64>
+  }
+}
+"#;
+    // index=2, scale=1.0 -> row 2 = [-0.3, 0.4, 0.0]
+    let idx = i64_buf(&[2]);
+    let scale = f64_buf(&[1.0]);
+    let out = run_mlir(mlir, &[&idx, &scale], &[24]);
+    let result = read_f64s(&out[0]);
+    assert!(
+        !result.iter().any(|v| v.is_nan()),
+        "cross-ABI @inner produced NaN: {result:?}"
+    );
+    assert_f64s_close(&result, &[-0.3, 0.4, 0.0]);
+}
+
+#[test]
+fn test_divide_ui32_mem() {
+    let mlir = r#"
+module @module {
+  func.func public @main(%arg0: tensor<4xui32>, %arg1: tensor<4xui32>) -> tensor<4xui32> {
+    %0 = stablehlo.add %arg0, %arg1 : tensor<4xui32>
+    %c = stablehlo.constant dense<2> : tensor<ui32>
+    %1 = stablehlo.broadcast_in_dim %c, dims = [] : (tensor<ui32>) -> tensor<4xui32>
+    %2 = stablehlo.divide %0, %1 : tensor<4xui32>
+    return %2 : tensor<4xui32>
+  }
+}
+"#;
+    let lo: Vec<u8> = [0u32, 10, 50, 100]
+        .iter()
+        .flat_map(|v| v.to_le_bytes())
+        .collect();
+    let hi: Vec<u8> = [120u32, 120, 120, 120]
+        .iter()
+        .flat_map(|v| v.to_le_bytes())
+        .collect();
+    let out = run_mlir_mem(mlir, &[&lo, &hi], &[16]);
+    let result: Vec<u32> = out[0]
+        .chunks_exact(4)
+        .map(|c| u32::from_le_bytes(c.try_into().unwrap()))
+        .collect();
+    assert_eq!(result, vec![60, 65, 85, 110]);
+}
+
+#[test]
+fn test_scatter_i32_index_mem() {
+    // Scatter with i32 index: set element at position 2 of a 5-element vector to 99.0
+    let mlir = r#"
+module @module {
+  func.func public @main(%arg0: tensor<5xf64>) -> tensor<5xf64> {
+    %idx = stablehlo.constant dense<[2]> : tensor<1xi32>
+    %upd = stablehlo.constant dense<99.0> : tensor<f64>
+    %0 = "stablehlo.scatter"(%arg0, %idx, %upd) <{
+      indices_are_sorted = true,
+      scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0], scatter_dims_to_operand_dims = [0]>,
+      unique_indices = true
+    }> ({
+    ^bb0(%a: tensor<f64>, %b: tensor<f64>):
+      stablehlo.return %b : tensor<f64>
+    }) : (tensor<5xf64>, tensor<1xi32>, tensor<f64>) -> tensor<5xf64>
+    return %0 : tensor<5xf64>
+  }
+}
+"#;
+    let in0 = f64_buf(&[1.0, 2.0, 3.0, 4.0, 5.0]);
+    let out = run_mlir_mem(mlir, &[&in0], &[40]);
+    let result = read_f64s(&out[0]);
+    assert_f64s_close(&result, &[1.0, 2.0, 99.0, 4.0, 5.0]);
+}
+
+#[test]
+fn test_cross_abi_multi_result() {
+    // Test pointer-ABI function returning multiple results via cross-ABI call
+    // The callee has a large constant (>64 elements) forcing pointer ABI
+    let mlir = r#"
+module @module {
+  func.func public @main(%arg0: tensor<3xf64>) -> (tensor<3xf64>, tensor<f64>) {
+    %0:2 = call @big_func(%arg0) : (tensor<3xf64>) -> (tensor<3xf64>, tensor<f64>)
+    return %0#0, %0#1 : tensor<3xf64>, tensor<f64>
+  }
+  func.func private @big_func(%arg0: tensor<3xf64>) -> (tensor<3xf64>, tensor<f64>) {
+    %big = stablehlo.constant dense<0.0> : tensor<100xf64>
+    %0 = stablehlo.slice %arg0 [0:1] : (tensor<3xf64>) -> tensor<1xf64>
+    %1 = stablehlo.reshape %0 : (tensor<1xf64>) -> tensor<f64>
+    %2 = stablehlo.multiply %arg0, %arg0 : tensor<3xf64>
+    return %2, %1 : tensor<3xf64>, tensor<f64>
+  }
+}
+"#;
+    let in0 = f64_buf(&[2.0, 3.0, 4.0]);
+    let out = run_mlir(mlir, &[&in0], &[24, 8]);
+    let r0 = read_f64s(&out[0]);
+    let r1 = read_f64s(&out[1]);
+    assert_f64s_close(&r0, &[4.0, 9.0, 16.0]);
+    assert_f64s_close(&r1, &[2.0]);
+}
+
+#[test]
+fn test_concatenate_dim1_mem() {
+    // Concatenate along dim 1: [[1,2],[3,4]] ++ [[5],[6]] -> [[1,2,5],[3,4,6]]
+    let mlir = r#"
+module @module {
+  func.func public @main(%arg0: tensor<2x2xf64>, %arg1: tensor<2x1xf64>) -> tensor<2x3xf64> {
+    %0 = stablehlo.concatenate %arg0, %arg1, dim = 1 : (tensor<2x2xf64>, tensor<2x1xf64>) -> tensor<2x3xf64>
+    return %0 : tensor<2x3xf64>
+  }
+}
+"#;
+    let a = f64_buf(&[1.0, 2.0, 3.0, 4.0]);
+    let b = f64_buf(&[5.0, 6.0]);
+    let out = run_mlir_mem(mlir, &[&a, &b], &[48]);
+    let result = read_f64s(&out[0]);
+    assert_f64s_close(&result, &[1.0, 2.0, 5.0, 3.0, 4.0, 6.0]);
 }
