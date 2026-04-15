@@ -393,6 +393,25 @@ pub enum Instruction {
         operands: Vec<ValueId>,
         backend_config: HashMap<String, i64>,
     },
+    Rsqrt {
+        operand: ValueId,
+    },
+    Log1p {
+        operand: ValueId,
+    },
+    IsFinite {
+        operand: ValueId,
+    },
+    Not {
+        operand: ValueId,
+    },
+    Ceil {
+        operand: ValueId,
+    },
+    ShiftRightArithmetic {
+        lhs: ValueId,
+        rhs: ValueId,
+    },
 }
 
 #[derive(Debug, Clone)]

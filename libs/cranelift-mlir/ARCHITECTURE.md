@@ -16,6 +16,7 @@ Cranelift, replacing IREE as the CPU execution backend for Elodin simulations.
 9. [Testing Strategy](#testing-strategy)
 10. [Supported Operations](#supported-operations)
 11. [Known Limitations and Future Work](#known-limitations-and-future-work)
+12. [Coverage Gap Analysis](#coverage-gap-analysis)
 
 ---
 
@@ -516,18 +517,18 @@ that was corrupting i32 index data.
 
 | Test Binary | Tests | Purpose |
 |-------------|-------|---------|
-| `ops.rs` | 123 | Per-op golden-value tests (scalar + pointer ABI) |
-| `checkpoint_test.rs` | 1 (ignored) | Checkpoint verifier (needs CHECKPOINT_DIR) |
-| `ball_e2e.rs` | 7 | Parse + compile ball MLIR |
-| `three_body_e2e.rs` | 2 | Parse + compile three-body MLIR |
-| `drone_e2e.rs` | 2 | Parse + compile drone MLIR |
-| `rocket_e2e.rs` | 2 | Parse + compile rocket MLIR |
-| `cube_sat_e2e.rs` | 2 | Parse + compile cube-sat MLIR |
-| `linalg_iree_e2e.rs` | 2 | Parse + compile linalg-iree MLIR |
+| `ops.rs` | 157 | Per-op golden-value tests (scalar + pointer ABI) |
+| `e2e.rs` | 4 | Parse + compile for ball, drone, rocket, linalg-iree |
+| `three_body_e2e.rs` | 2 | Parse + compile + while-loop inspection |
+| `cube_sat_e2e.rs` | 3 | Parse + compile + single-tick execution |
+| `checkpoint_test.rs` | 7 (ignored) | Checkpoint verifier (needs CHECKPOINT_DIR) |
 | `drone_tick_test.rs` | 6 | Full tick execution with value checks |
-| Other integration tests | ~25 | Specific patterns: threefry, sret, dynamic ops, etc. |
+| Other integration tests | ~17 | threefry, sret, dynamic ops, closed calls, uniform pipeline |
 
-**Total: 172+ tests across 19 test binaries.**
+**Total: 189+ tests across 13 test binaries.**
+
+Test utilities are centralized in `tests/common/mod.rs` (`run_mlir`, `run_mlir_mem`,
+buffer helpers, assertion helpers) to avoid duplication across test files.
 
 ### Testing Philosophy
 
@@ -543,7 +544,7 @@ that was corrupting i32 index data.
 
 ```bash
 cargo test -p cranelift-mlir                    # all tests
-cargo test -p cranelift-mlir --test ops         # 123 per-op tests
+cargo test -p cranelift-mlir --test ops         # 157 per-op tests
 cargo test -p cranelift-mlir --release          # all tests (needed for complex JIT code)
 ELODIN_BACKEND=cranelift bash scripts/ci/regress.sh --all  # full regression suite
 ```
@@ -553,35 +554,42 @@ ELODIN_BACKEND=cranelift bash scripts/ci/regress.sh --all  # full regression sui
 ## Supported Operations
 
 ### Arithmetic
-| Op | Tested | Notes |
-|----|--------|-------|
-| stablehlo.add | yes | float + integer |
-| stablehlo.subtract | yes | float + integer |
-| stablehlo.multiply | yes | float + integer |
-| stablehlo.divide | yes | float + signed/unsigned integer |
-| stablehlo.negate | yes | float + integer |
-| stablehlo.sqrt | yes | inline Cranelift instruction |
-| stablehlo.power | yes | via libm pow |
-| stablehlo.maximum | yes | float |
-| stablehlo.minimum | yes | float |
-| stablehlo.abs | yes | float |
-| stablehlo.floor | yes | float |
-| stablehlo.sign | yes | float |
-| stablehlo.remainder | yes | float + integer |
-| stablehlo.sine | yes | via libm |
-| stablehlo.cosine | yes | via libm |
-| stablehlo.tanh | yes | via libm |
-| stablehlo.exponential | yes | via libm |
-| stablehlo.log | yes | via libm |
-| chlo.tan | yes | via libm |
-| chlo.acos | yes | via libm |
-| chlo.erf_inv | yes | Cephes ndtri-based, ~15 digits f64 |
+| Op | Tested | Scalar ABI | Pointer ABI | Notes |
+|----|--------|-----------|-------------|-------|
+| stablehlo.add | yes | yes | yes (f64/i64/i32) | |
+| stablehlo.subtract | yes | yes | yes (f64/i64/i32) | |
+| stablehlo.multiply | yes | yes | yes (f64/i64/i32) | |
+| stablehlo.divide | yes | yes | yes (f64/i64/i32/ui32) | zero-protection on integer paths |
+| stablehlo.negate | yes | yes | yes (f64/i64/i32) | |
+| stablehlo.sqrt | yes | yes | yes | inline Cranelift instruction |
+| stablehlo.rsqrt | yes | yes | yes | 1/sqrt(x) |
+| stablehlo.power | yes | yes | yes | via libm pow |
+| stablehlo.maximum | yes | yes | yes (f64/i64/i32) | |
+| stablehlo.minimum | yes | yes | yes (f64/i64/i32) | |
+| stablehlo.abs | yes | yes | yes (f64/i64/i32) | |
+| stablehlo.floor | yes | yes | yes | |
+| stablehlo.ceil | yes | yes | yes | |
+| stablehlo.sign | yes | yes | yes | |
+| stablehlo.remainder | yes | yes | yes (f64) | |
+| stablehlo.clamp | yes | yes | yes | ternary: min/operand/max |
+| stablehlo.round_nearest_even | yes | yes | yes | banker's rounding |
+| stablehlo.sine | yes | yes | yes | via libm |
+| stablehlo.cosine | yes | yes | yes | via libm |
+| stablehlo.tanh | yes | yes | yes | via libm |
+| stablehlo.exponential | yes | yes | yes | via libm |
+| stablehlo.log | yes | yes | yes | via libm |
+| stablehlo.log_plus_one | yes | yes | yes | log1p, via libm |
+| stablehlo.atan2 | yes | yes | yes | via libm/tensor_rt |
+| chlo.tan | yes | yes | yes | via libm |
+| chlo.acos | yes | yes | yes | via libm/tensor_rt |
+| chlo.erf_inv | yes | yes | yes | Cephes ndtri-based, ~15 digits f64 |
+| stablehlo.is_finite | yes | yes | yes | returns i1 |
 
 ### Comparison and Selection
-| Op | Tested | Notes |
-|----|--------|-------|
-| stablehlo.compare | yes | all directions, float/signed/unsigned, i32/i64 |
-| stablehlo.select | yes | f64/i32/i64 with scalar or tensor i1 mask |
+| Op | Tested | Scalar ABI | Pointer ABI | Notes |
+|----|--------|-----------|-------------|-------|
+| stablehlo.compare | yes | yes (all dirs x float/signed/unsigned) | yes (all 6 dirs x f64/i64/i32) | |
+| stablehlo.select | yes | yes | yes (f64/i64/i32) | scalar or tensor i1 mask |
 
 ### Constants
 | Op | Tested | Notes |
@@ -589,27 +597,27 @@ ELODIN_BACKEND=cranelift bash scripts/ci/regress.sh --all  # full regression sui
 | stablehlo.constant | yes | scalar, dense array, splat, hex blobs |
 
 ### Shape Manipulation
-| Op | Tested | Notes |
-|----|--------|-------|
-| stablehlo.reshape | yes | arbitrary shape changes |
-| stablehlo.broadcast_in_dim | yes | N-dimensional with dims mapping |
-| stablehlo.slice | yes | N-dimensional |
-| stablehlo.concatenate | yes | any dimension, multi-operand |
-| stablehlo.transpose | yes | 2D + N-D |
-| stablehlo.pad | yes | N-dimensional |
-| stablehlo.reverse | yes | |
-| stablehlo.iota | yes | N-dimensional with dimension parameter, f64 + i64 |
+| Op | Tested | Scalar ABI | Pointer ABI | Notes |
+|----|--------|-----------|-------------|-------|
+| stablehlo.reshape | yes | yes | yes | arbitrary shape changes |
+| stablehlo.broadcast_in_dim | yes | yes | yes (all types) | byte-generic for non-f64 |
+| stablehlo.slice | yes | yes | yes (all types) | byte-generic for non-f64 |
+| stablehlo.concatenate | yes | yes | yes (all types) | byte-aware via `elem_sz` |
+| stablehlo.transpose | yes | yes | yes (all types) | byte-generic for non-f64 |
+| stablehlo.pad | yes | yes | yes | |
+| stablehlo.reverse | yes | yes | yes | |
+| stablehlo.iota | yes | yes | yes | N-dimensional, f64 + i64 |
 
 ### Dynamic Indexing
-| Op | Tested | Notes |
-|----|--------|-------|
-| stablehlo.dynamic_slice | yes | N-dimensional, runtime indices |
-| stablehlo.dynamic_update_slice | yes | N-dimensional, runtime indices |
+| Op | Tested | Scalar ABI | Pointer ABI | Notes |
+|----|--------|-----------|-------------|-------|
+| stablehlo.dynamic_slice | yes | yes | yes (all types) | byte-generic for non-f64 |
+| stablehlo.dynamic_update_slice | yes | yes | yes (all types) | byte-generic for non-f64 |
 
 ### Type Conversion
 | Op | Tested | Notes |
 |----|--------|-------|
-| stablehlo.convert | yes | all numeric type pairs (f64/f32/i64/i32/ui32/ui64/i1) |
+| stablehlo.convert | yes | 17 type pairs including f64/f32/i64/i32/ui32/ui64/i1, both ABI paths |
 | stablehlo.bitcast_convert | yes | reinterpret bits |
 
 ### Integer Bitwise
@@ -618,20 +626,22 @@ ELODIN_BACKEND=cranelift bash scripts/ci/regress.sh --all  # full regression sui
 | stablehlo.xor | yes | |
 | stablehlo.or | yes | |
 | stablehlo.and | yes | |
+| stablehlo.not | yes | bitwise NOT for i64/i32, boolean NOT for i1 |
 | stablehlo.shift_left | yes | |
 | stablehlo.shift_right_logical | yes | |
+| stablehlo.shift_right_arithmetic | yes | signed right shift |
 
 ### Linear Algebra
 | Op | Tested | Notes |
 |----|--------|-------|
 | stablehlo.dot_general | yes | scalar, 1D dot, rank1-rank2, matvec, matmul, batched |
-| stablehlo.reduce | yes | add/min/max/and/or, all dimensions |
+| stablehlo.reduce | yes | add/min/max (f64 + i64), and/or, all dimensions |
 
 ### Indexing
 | Op | Tested | Notes |
 |----|--------|-------|
-| stablehlo.gather | yes | row-select, N-D multi-index, 3D pivot, diagonal |
-| stablehlo.scatter | yes | 1D index-set with i32/i64 indices |
+| stablehlo.gather | yes | row-select + N-D, byte-generic for non-f64 data, i32/ui32 indices widened |
+| stablehlo.scatter | yes | byte-generic for non-f64 data, i32/i64 indices |
 
 ### Control Flow
 | Op | Tested | Notes |
@@ -691,3 +701,112 @@ ELODIN_BACKEND=cranelift bash scripts/ci/regress.sh --all  # full regression sui
 
 - **Parallel compilation**: functions could be compiled in parallel since they are
   independent after classification.
+
+---
+
+## Coverage Gap Analysis
+
+A systematic inventory of what remains unsupported, maintained as a living reference.
+Previous versions of this section identified 7 priority areas; all have been addressed
+in the current implementation. This section now documents the **remaining gaps**.
+
+### Recently Resolved (no longer gaps)
+
+The following areas were identified as gaps and have been fully implemented:
+
+- **Pointer-ABI paths**: `atan2`, `acos`, `erf_inv`, `clamp`, `reverse`,
+  `round_nearest_even` -- all 6 former stubs now have full `tensor_rt` implementations
+- **Element-size-aware gather/scatter**: byte-generic `gather_generic`,
+  `gather_nd_generic`, `scatter_generic` handle any element type (f64/i64/i32/etc.)
+  without silent corruption
+- **Integer comparison completeness**: all 6 directions (eq/ne/lt/le/gt/ge) for both
+  i64 and i32 in the pointer-ABI path
+- **Integer elementwise ops**: multiply (i32), divide (i64), maximum/minimum (i64/i32),
+  negate (i64/i32), abs (i64/i32), reduce sum/max/min (i64)
+- **Missing conversions**: ui32->i64, ui32->f64, f64->i1, i64->i1, ui64->f64,
+  i32<->f32 (7 new conversion paths)
+- **Integer-typed layout ops**: broadcast_nd, slice, transpose_nd, dynamic_slice,
+  dynamic_update_slice all have byte-generic variants for non-f64 types
+- **New StableHLO ops**: `rsqrt`, `log_plus_one` (log1p), `is_finite`, `not`, `ceil`,
+  `shift_right_arithmetic` -- parser, IR, scalar lowering, pointer-ABI lowering, tests
+
+### Remaining Gap 1: Unimplemented StableHLO Ops
+
+Operations that JAX can emit but have no parser, IR variant, or lowering.
+
+#### High Likelihood (common in physics/control simulations)
+
+| StableHLO Op | Description | When JAX Emits It |
+|--------------|-------------|-------------------|
+| `stablehlo.sort` | Sort along a dimension | `jnp.sort`, `jnp.argsort`, `jnp.median` |
+| `chlo.asin` | Arcsine | `jnp.arcsin`, coordinate transforms |
+| `chlo.atan` | Arctangent (1-arg) | `jnp.arctan`, orbit mechanics |
+| `chlo.sinh` / `chlo.cosh` | Hyperbolic trig | `jnp.sinh`, `jnp.cosh`, thermal models |
+| `chlo.erfc` | Complementary error function | `jax.scipy.special.erfc` |
+| `stablehlo.expm1` | exp(x) - 1 | `jnp.expm1`, numerical stability |
+| `stablehlo.cbrt` | Cube root | `jnp.cbrt`, gravitational potential |
+
+#### Medium Likelihood (advanced simulations, ML-in-the-loop)
+
+| StableHLO Op | Description | When JAX Emits It |
+|--------------|-------------|-------------------|
+| `stablehlo.map` | Apply function elementwise | Complex ops JAX doesn't fuse |
+| `stablehlo.reduce_window` | Sliding window reduction | Moving averages, signal processing |
+| `stablehlo.convolution` | N-D convolution | Sensor processing, filtering |
+| `stablehlo.select_and_scatter` | Pooling-like scatter | Advanced indexing patterns |
+| `stablehlo.real_dynamic_slice` | Fully dynamic slicing | Runtime-computed slice bounds |
+| `stablehlo.batch_norm_inference` | Batch normalization | Neural network controllers |
+
+#### Low Likelihood (ML-specific or multi-device)
+
+| StableHLO Op | Description | Notes |
+|--------------|-------------|-------|
+| `stablehlo.fft` | FFT/IFFT | Would need FFTW or similar |
+| `stablehlo.all_reduce` | Distributed reduction | Multi-device only |
+| `stablehlo.all_gather` | Distributed gather | Multi-device only |
+| `stablehlo.rng` | Random number generation | JAX compiles PRNG to `threefry` ops |
+| `stablehlo.cholesky` | Direct Cholesky | JAX lowers to `custom_call @lapack_dpotrf_ffi` |
+| `stablehlo.triangular_solve` | Direct tri-solve | JAX lowers to `custom_call @lapack_dtrsm_ffi` |
+
+### Remaining Gap 2: LAPACK Targets Not Yet Implemented
+
+| LAPACK Target | Operation | JAX API | Priority |
+|---------------|-----------|---------|----------|
+| `lapack_dgeev_ffi` | Non-symmetric eigendecomp | `jnp.linalg.eig` | Medium |
+| `lapack_dgelsd_ffi` | Least-squares solve | `jnp.linalg.lstsq` | Medium |
+| `lapack_dgesv_ffi` | General linear solve | `jnp.linalg.solve` | Medium |
+| `lapack_dpotrs_ffi` | Cholesky-based solve | `jax.scipy.linalg.cho_solve` | Medium |
+| `lapack_dgesvd_ffi` | Full SVD | `jnp.linalg.svd(full_matrices=True)` | Low |
+| `lapack_dsytrd_ffi` | Tridiagonal reduction | Internal to eigensolvers | Low |
+
+### Remaining Gap 3: Type Permutations Still Missing
+
+Most type coverage is now complete. Remaining gaps are edge cases:
+
+| Area | Gap | Risk |
+|------|-----|------|
+| `select` pointer-ABI | f32, ui32 types missing | Low -- JAX converts to f64 for select |
+| `remainder` pointer-ABI | integer types (i64/i32) | Low -- scalar path handles via `srem` |
+| `power` pointer-ABI | integer types | Low -- integer power is rare |
+| `reduce` pointer-ABI (and/or) | boolean reduce | Low -- used in logical aggregation |
+| `pad` pointer-ABI | integer types | Low -- padding is almost always on float data |
+| `matmul` pointer-ABI | integer types | Low -- matrix multiply on integers is rare |
+
+### Remaining Gap 4: Structural Limitations
+
+| Limitation | Impact | Potential Resolution |
+|------------|--------|---------------------|
+| `stablehlo.custom_call` (LAPACK) pointer-ABI only on scalar path | Large-tensor functions calling LAPACK will fail | LAPACK operates on stack-allocated buffers that are always smaller than the threshold; unlikely to trigger in practice |
+| No SIMD vectorization | ~10x slower than SIMD-capable for small vector ops | Cranelift SIMD types (e.g., 4-wide f64) |
+| Compile-time constant folding absent | Constant tensor ops recomputed each tick | Evaluate `Constant` + pure ops at compile time |
+| Debug-mode UB checks on large JIT code | Must use `--release` for complex examples | Cranelift large stack frame limitation |
+
+### Summary: Recommended Next Additions
+
+1. **`chlo.asin`**, **`chlo.atan`** -- trivial unary libm ops, common in aerospace
+2. **`stablehlo.sort`** -- needed for `jnp.argsort`, `jnp.median`; complex (requires
+   comparator function support)
+3. **`lapack_dgesv_ffi`** and **`lapack_dpotrs_ffi`** -- general and Cholesky-based
+   solvers for Kalman filter pipelines
+4. **`stablehlo.expm1`** and **`chlo.sinh`/`chlo.cosh`** -- trivial libm ops for
+   numerical stability and thermal models

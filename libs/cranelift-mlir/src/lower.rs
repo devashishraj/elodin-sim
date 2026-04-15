@@ -205,6 +205,9 @@ extern "C" fn libc_tanh(x: f64) -> f64 {
 extern "C" fn libc_tan(x: f64) -> f64 {
     x.tan()
 }
+extern "C" fn libc_log1p(x: f64) -> f64 {
+    x.ln_1p()
+}
 
 /// erfinv via the Cephes ndtri rational approximation.
 /// erfinv(x) = ndtri((x + 1) / 2) / sqrt(2)
@@ -354,6 +357,7 @@ struct LibmIds {
     pow: FuncId,
     tanh: FuncId,
     tan: FuncId,
+    log1p: FuncId,
 }
 
 fn declare_libm_functions(
@@ -388,6 +392,7 @@ fn declare_libm_functions(
         pow: mk("pow", 2, 1)?,
         tanh: mk("tanh", 1, 1)?,
         tan: mk("tan", 1, 1)?,
+        log1p: mk("log1p_impl", 1, 1)?,
     })
 }
 
@@ -444,6 +449,24 @@ define_trt! {
     tanh_f64,  "__trt_tanh_f64",  tensor_rt::tensor_tanh_f64,  [ptr_type(), ptr_type(), types::I64];
     sign_f64,  "__trt_sign_f64",  tensor_rt::tensor_sign_f64,  [ptr_type(), ptr_type(), types::I64];
     tan_f64,   "__trt_tan_f64",   tensor_rt::tensor_tan_f64,   [ptr_type(), ptr_type(), types::I64];
+    acos_f64,   "__trt_acos_f64",   tensor_rt::tensor_acos_f64,   [ptr_type(), ptr_type(), types::I64];
+    rsqrt_f64,  "__trt_rsqrt_f64",  tensor_rt::tensor_rsqrt_f64,  [ptr_type(), ptr_type(), types::I64];
+    log1p_f64,  "__trt_log1p_f64",  tensor_rt::tensor_log1p_f64,  [ptr_type(), ptr_type(), types::I64];
+    ceil_f64,   "__trt_ceil_f64",   tensor_rt::tensor_ceil_f64,   [ptr_type(), ptr_type(), types::I64];
+    is_finite_f64, "__trt_is_finite_f64", tensor_rt::tensor_is_finite_f64, [ptr_type(), ptr_type(), types::I64];
+    not_i64,    "__trt_not_i64",    tensor_rt::tensor_not_i64,    [ptr_type(), ptr_type(), types::I64];
+    not_i32,    "__trt_not_i32",    tensor_rt::tensor_not_i32,    [ptr_type(), ptr_type(), types::I64];
+    not_i1,     "__trt_not_i1",     tensor_rt::tensor_not_i1,     [ptr_type(), ptr_type(), types::I64];
+    sshr_i64,   "__trt_sshr_i64",   tensor_rt::tensor_sshr_i64,   [ptr_type(), ptr_type(), ptr_type(), types::I64];
+    sshr_i32,   "__trt_sshr_i32",   tensor_rt::tensor_sshr_i32,   [ptr_type(), ptr_type(), ptr_type(), types::I64];
+    round_f64, "__trt_round_f64", tensor_rt::tensor_round_f64, [ptr_type(), ptr_type(), types::I64];
+    erf_inv_f64, "__trt_erf_inv_f64", tensor_rt::tensor_erf_inv_f64, [ptr_type(), ptr_type(), types::I64];
+    // f64 binary: atan2
+    atan2_f64, "__trt_atan2_f64", tensor_rt::tensor_atan2_f64, [ptr_type(), ptr_type(), ptr_type(), types::I64];
+    // f64 ternary: clamp fn(dst, src, min, max, n)
+    clamp_f64, "__trt_clamp_f64", tensor_rt::tensor_clamp_f64, [ptr_type(), ptr_type(), ptr_type(), ptr_type(), types::I64];
+    // reverse: fn(dst, src, n, shape, rank, dims, n_dims)
+    reverse_f64, "__trt_reverse_f64", tensor_rt::tensor_reverse_f64, [ptr_type(), ptr_type(), types::I64, ptr_type(), types::I64, ptr_type(), types::I64];
     // comparison: fn(dst_u8, a, b, n)
     cmp_eq_f64, "__trt_cmp_eq_f64", tensor_rt::tensor_cmp_eq_f64, [ptr_type(), ptr_type(), ptr_type(), types::I64];
     cmp_lt_f64, "__trt_cmp_lt_f64", tensor_rt::tensor_cmp_lt_f64, [ptr_type(), ptr_type(), ptr_type(), types::I64];
@@ -452,8 +475,17 @@ define_trt! {
     cmp_ge_f64, "__trt_cmp_ge_f64", tensor_rt::tensor_cmp_ge_f64, [ptr_type(), ptr_type(), ptr_type(), types::I64];
     cmp_ne_f64, "__trt_cmp_ne_f64", tensor_rt::tensor_cmp_ne_f64, [ptr_type(), ptr_type(), ptr_type(), types::I64];
     cmp_eq_i64, "__trt_cmp_eq_i64", tensor_rt::tensor_cmp_eq_i64, [ptr_type(), ptr_type(), ptr_type(), types::I64];
+    cmp_ne_i64, "__trt_cmp_ne_i64", tensor_rt::tensor_cmp_ne_i64, [ptr_type(), ptr_type(), ptr_type(), types::I64];
     cmp_lt_i64, "__trt_cmp_lt_i64", tensor_rt::tensor_cmp_lt_i64, [ptr_type(), ptr_type(), ptr_type(), types::I64];
+    cmp_le_i64, "__trt_cmp_le_i64", tensor_rt::tensor_cmp_le_i64, [ptr_type(), ptr_type(), ptr_type(), types::I64];
+    cmp_gt_i64, "__trt_cmp_gt_i64", tensor_rt::tensor_cmp_gt_i64, [ptr_type(), ptr_type(), ptr_type(), types::I64];
+    cmp_ge_i64, "__trt_cmp_ge_i64", tensor_rt::tensor_cmp_ge_i64, [ptr_type(), ptr_type(), ptr_type(), types::I64];
+    cmp_eq_i32, "__trt_cmp_eq_i32", tensor_rt::tensor_cmp_eq_i32, [ptr_type(), ptr_type(), ptr_type(), types::I64];
+    cmp_ne_i32, "__trt_cmp_ne_i32", tensor_rt::tensor_cmp_ne_i32, [ptr_type(), ptr_type(), ptr_type(), types::I64];
     cmp_lt_i32, "__trt_cmp_lt_i32", tensor_rt::tensor_cmp_lt_i32, [ptr_type(), ptr_type(), ptr_type(), types::I64];
+    cmp_le_i32, "__trt_cmp_le_i32", tensor_rt::tensor_cmp_le_i32, [ptr_type(), ptr_type(), ptr_type(), types::I64];
+    cmp_gt_i32, "__trt_cmp_gt_i32", tensor_rt::tensor_cmp_gt_i32, [ptr_type(), ptr_type(), ptr_type(), types::I64];
+    cmp_ge_i32, "__trt_cmp_ge_i32", tensor_rt::tensor_cmp_ge_i32, [ptr_type(), ptr_type(), ptr_type(), types::I64];
     // select: fn(dst, cond, on_true, on_false, n)
     select_f64, "__trt_select_f64", tensor_rt::tensor_select_f64, [ptr_type(), ptr_type(), ptr_type(), ptr_type(), types::I64];
     select_i64, "__trt_select_i64", tensor_rt::tensor_select_i64, [ptr_type(), ptr_type(), ptr_type(), ptr_type(), types::I64];
@@ -469,19 +501,40 @@ define_trt! {
     convert_f64_to_f32, "__trt_cvt_f64_f32",  tensor_rt::tensor_convert_f64_to_f32, [ptr_type(), ptr_type(), types::I64];
     convert_f32_to_f64, "__trt_cvt_f32_f64",  tensor_rt::tensor_convert_f32_to_f64, [ptr_type(), ptr_type(), types::I64];
     widen_i32_to_i64,   "__trt_widen_i32_i64", tensor_rt::tensor_widen_i32_to_i64,  [ptr_type(), ptr_type(), types::I64];
+    convert_ui32_to_i64, "__trt_cvt_ui32_i64", tensor_rt::tensor_convert_ui32_to_i64, [ptr_type(), ptr_type(), types::I64];
+    convert_ui32_to_f64, "__trt_cvt_ui32_f64", tensor_rt::tensor_convert_ui32_to_f64, [ptr_type(), ptr_type(), types::I64];
+    convert_f64_to_i1,   "__trt_cvt_f64_i1",  tensor_rt::tensor_convert_f64_to_i1,   [ptr_type(), ptr_type(), types::I64];
+    convert_i64_to_i1,   "__trt_cvt_i64_i1",  tensor_rt::tensor_convert_i64_to_i1,   [ptr_type(), ptr_type(), types::I64];
+    convert_ui64_to_f64, "__trt_cvt_ui64_f64", tensor_rt::tensor_convert_ui64_to_f64, [ptr_type(), ptr_type(), types::I64];
+    convert_i32_to_f32,  "__trt_cvt_i32_f32",  tensor_rt::tensor_convert_i32_to_f32,  [ptr_type(), ptr_type(), types::I64];
+    convert_f32_to_i32,  "__trt_cvt_f32_i32",  tensor_rt::tensor_convert_f32_to_i32,  [ptr_type(), ptr_type(), types::I64];
     // broadcast: fn(dst, val, n)
     broadcast_f64, "__trt_bcast_f64", tensor_rt::tensor_broadcast_f64, [ptr_type(), types::F64, types::I64];
     broadcast_i64, "__trt_bcast_i64", tensor_rt::tensor_broadcast_i64, [ptr_type(), types::I64, types::I64];
     broadcast_i32, "__trt_bcast_i32", tensor_rt::tensor_broadcast_i32, [ptr_type(), types::I32, types::I64];
     // i64 binary elementwise
-    add_i64, "__trt_add_i64", tensor_rt::tensor_add_i64, [ptr_type(), ptr_type(), ptr_type(), types::I64];
-    sub_i64, "__trt_sub_i64", tensor_rt::tensor_sub_i64, [ptr_type(), ptr_type(), ptr_type(), types::I64];
-    mul_i64, "__trt_mul_i64", tensor_rt::tensor_mul_i64, [ptr_type(), ptr_type(), ptr_type(), types::I64];
+    add_i64,  "__trt_add_i64",  tensor_rt::tensor_add_i64,  [ptr_type(), ptr_type(), ptr_type(), types::I64];
+    sub_i64,  "__trt_sub_i64",  tensor_rt::tensor_sub_i64,  [ptr_type(), ptr_type(), ptr_type(), types::I64];
+    mul_i64,  "__trt_mul_i64",  tensor_rt::tensor_mul_i64,  [ptr_type(), ptr_type(), ptr_type(), types::I64];
+    div_i64,  "__trt_div_i64",  tensor_rt::tensor_div_i64,  [ptr_type(), ptr_type(), ptr_type(), types::I64];
+    max_i64,  "__trt_max_i64",  tensor_rt::tensor_max_i64,  [ptr_type(), ptr_type(), ptr_type(), types::I64];
+    min_i64,  "__trt_min_i64",  tensor_rt::tensor_min_i64,  [ptr_type(), ptr_type(), ptr_type(), types::I64];
+    neg_i64,  "__trt_neg_i64",  tensor_rt::tensor_neg_i64,  [ptr_type(), ptr_type(), types::I64];
+    abs_i64,  "__trt_abs_i64",  tensor_rt::tensor_abs_i64,  [ptr_type(), ptr_type(), types::I64];
     // i32 binary elementwise
     add_i32,  "__trt_add_i32",  tensor_rt::tensor_add_i32,  [ptr_type(), ptr_type(), ptr_type(), types::I64];
     sub_i32,  "__trt_sub_i32",  tensor_rt::tensor_sub_i32,  [ptr_type(), ptr_type(), ptr_type(), types::I64];
+    mul_i32,  "__trt_mul_i32",  tensor_rt::tensor_mul_i32,  [ptr_type(), ptr_type(), ptr_type(), types::I64];
     div_i32,  "__trt_div_i32",  tensor_rt::tensor_div_i32,  [ptr_type(), ptr_type(), ptr_type(), types::I64];
     div_ui32, "__trt_div_ui32", tensor_rt::tensor_div_ui32, [ptr_type(), ptr_type(), ptr_type(), types::I64];
+    max_i32,  "__trt_max_i32",  tensor_rt::tensor_max_i32,  [ptr_type(), ptr_type(), ptr_type(), types::I64];
+    min_i32,  "__trt_min_i32",  tensor_rt::tensor_min_i32,  [ptr_type(), ptr_type(), ptr_type(), types::I64];
+    neg_i32,  "__trt_neg_i32",  tensor_rt::tensor_neg_i32,  [ptr_type(), ptr_type(), types::I64];
+    abs_i32,  "__trt_abs_i32",  tensor_rt::tensor_abs_i32,  [ptr_type(), ptr_type(), types::I64];
+    // integer reduce
+    reduce_sum_i64, "__trt_reduce_sum_i64", tensor_rt::tensor_reduce_sum_i64, [ptr_type(), ptr_type(), types::I64, types::I64];
+    reduce_max_i64, "__trt_reduce_max_i64", tensor_rt::tensor_reduce_max_i64, [ptr_type(), ptr_type(), types::I64, types::I64];
+    reduce_min_i64, "__trt_reduce_min_i64", tensor_rt::tensor_reduce_min_i64, [ptr_type(), ptr_type(), types::I64, types::I64];
     // memory
     memcpy, "__trt_memcpy", tensor_rt::tensor_memcpy, [ptr_type(), ptr_type(), types::I64];
     // layout / shape
@@ -499,10 +552,20 @@ define_trt! {
     scatter_f64,   "__trt_scatter_f64",   tensor_rt::tensor_scatter_f64,   [ptr_type(), ptr_type(), types::I64, ptr_type(), ptr_type(), types::I64, types::I64];
     gather_f64,    "__trt_gather_f64",    tensor_rt::tensor_gather_f64,    [ptr_type(), ptr_type(), types::I64, ptr_type(), types::I64, types::I64];
     gather_nd_f64, "__trt_gather_nd_f64", tensor_rt::tensor_gather_nd_f64, [ptr_type(), ptr_type(), types::I64, ptr_type(), types::I64, types::I64, ptr_type(), types::I64, ptr_type(), ptr_type(), types::I64];
+    // byte-generic gather/scatter with elem_sz
+    gather_generic,    "__trt_gather_generic",    tensor_rt::tensor_gather_generic,    [ptr_type(), ptr_type(), types::I64, ptr_type(), types::I64, types::I64, types::I64];
+    gather_nd_generic, "__trt_gather_nd_generic", tensor_rt::tensor_gather_nd_generic, [ptr_type(), ptr_type(), types::I64, ptr_type(), types::I64, types::I64, ptr_type(), types::I64, ptr_type(), ptr_type(), types::I64, types::I64];
+    scatter_generic,   "__trt_scatter_generic",   tensor_rt::tensor_scatter_generic,   [ptr_type(), ptr_type(), types::I64, ptr_type(), ptr_type(), types::I64, types::I64, types::I64];
     matmul_f64,    "__trt_matmul_f64",    tensor_rt::tensor_matmul_f64,    [ptr_type(), ptr_type(), ptr_type(), types::I64, types::I64, types::I64];
     // dynamic slice
     dynamic_slice_f64,        "__trt_dyn_slice_f64",     tensor_rt::tensor_dynamic_slice_f64,        [ptr_type(), ptr_type(), types::I64, types::I64, ptr_type(), types::I64, ptr_type(), ptr_type()];
     dynamic_update_slice_f64, "__trt_dyn_upd_slice_f64", tensor_rt::tensor_dynamic_update_slice_f64, [ptr_type(), ptr_type(), ptr_type(), types::I64, types::I64, ptr_type(), types::I64, ptr_type(), ptr_type()];
+    // byte-generic layout ops (for non-f64 types)
+    broadcast_nd_generic,         "__trt_bcast_nd_generic",     tensor_rt::tensor_broadcast_nd_generic,         [ptr_type(), ptr_type(), types::I64, types::I64, ptr_type(), types::I64, ptr_type(), types::I64, ptr_type(), types::I64];
+    slice_generic,                "__trt_slice_generic",        tensor_rt::tensor_slice_generic,                [ptr_type(), ptr_type(), types::I64, types::I64, ptr_type(), types::I64, ptr_type(), ptr_type(), types::I64];
+    transpose_nd_generic,         "__trt_transpose_nd_generic", tensor_rt::tensor_transpose_nd_generic,         [ptr_type(), ptr_type(), types::I64, ptr_type(), ptr_type(), types::I64, types::I64];
+    dynamic_slice_generic,        "__trt_dyn_slice_generic",    tensor_rt::tensor_dynamic_slice_generic,        [ptr_type(), ptr_type(), types::I64, types::I64, ptr_type(), types::I64, ptr_type(), ptr_type(), types::I64];
+    dynamic_update_slice_generic, "__trt_dyn_upd_generic",      tensor_rt::tensor_dynamic_update_slice_generic, [ptr_type(), ptr_type(), ptr_type(), types::I64, types::I64, ptr_type(), types::I64, ptr_type(), ptr_type(), types::I64];
     // iota
     iota_nd_i64, "__trt_iota_nd_i64", tensor_rt::tensor_iota_nd_i64, [ptr_type(), types::I64, ptr_type(), types::I64, types::I64];
     iota_nd_f64, "__trt_iota_nd_f64", tensor_rt::tensor_iota_nd_f64, [ptr_type(), types::I64, ptr_type(), types::I64, types::I64];
@@ -544,6 +607,7 @@ pub fn compile_module_with_config(
     jit_builder.symbol("tanh", libc_tanh as *const u8);
     jit_builder.symbol("tan", libc_tan as *const u8);
     jit_builder.symbol("erf_inv_impl", erf_inv_scalar as *const u8);
+    jit_builder.symbol("log1p_impl", libc_log1p as *const u8);
     jit_builder.symbol("__cranelift_svd", cranelift_svd as *const u8);
     jit_builder.symbol("__cranelift_lu", cranelift_lu as *const u8);
     jit_builder.symbol("__cranelift_trsm", cranelift_trsm as *const u8);
@@ -1141,10 +1205,10 @@ fn lower_instruction_mem(
         Instruction::Multiply { lhs, rhs } => {
             let dst = alloc_slot(builder, n * elem_sz);
             let n_val = builder.ins().iconst(types::I64, n as i64);
-            let fid = if is_float(rt.element_type) {
-                trt_ids.mul_f64
-            } else {
-                trt_ids.mul_i64
+            let fid = match rt.element_type {
+                ElementType::F64 | ElementType::F32 => trt_ids.mul_f64,
+                ElementType::I32 | ElementType::UI32 => trt_ids.mul_i32,
+                _ => trt_ids.mul_i64,
             };
             trt_call(
                 builder,
@@ -1161,7 +1225,7 @@ fn lower_instruction_mem(
                 ElementType::F64 | ElementType::F32 => trt_ids.div_f64,
                 ElementType::UI32 => trt_ids.div_ui32,
                 ElementType::I32 => trt_ids.div_i32,
-                _ => trt_ids.div_f64,
+                _ => trt_ids.div_i64,
             };
             trt_call(
                 builder,
@@ -1174,23 +1238,23 @@ fn lower_instruction_mem(
         Instruction::Maximum { lhs, rhs } => {
             let dst = alloc_slot(builder, n * elem_sz);
             let n_val = builder.ins().iconst(types::I64, n as i64);
-            trt_call(
-                builder,
-                jit_module,
-                trt_ids.max_f64,
-                &[dst, get(lhs)?, get(rhs)?, n_val],
-            );
+            let fid = match rt.element_type {
+                ElementType::I32 | ElementType::UI32 => trt_ids.max_i32,
+                ElementType::I64 | ElementType::UI64 => trt_ids.max_i64,
+                _ => trt_ids.max_f64,
+            };
+            trt_call(builder, jit_module, fid, &[dst, get(lhs)?, get(rhs)?, n_val]);
             Ok(vec![vec![dst]])
         }
         Instruction::Minimum { lhs, rhs } => {
             let dst = alloc_slot(builder, n * elem_sz);
             let n_val = builder.ins().iconst(types::I64, n as i64);
-            trt_call(
-                builder,
-                jit_module,
-                trt_ids.min_f64,
-                &[dst, get(lhs)?, get(rhs)?, n_val],
-            );
+            let fid = match rt.element_type {
+                ElementType::I32 | ElementType::UI32 => trt_ids.min_i32,
+                ElementType::I64 | ElementType::UI64 => trt_ids.min_i64,
+                _ => trt_ids.min_f64,
+            };
+            trt_call(builder, jit_module, fid, &[dst, get(lhs)?, get(rhs)?, n_val]);
             Ok(vec![vec![dst]])
         }
         Instruction::Power { lhs, rhs } => {
@@ -1219,12 +1283,12 @@ fn lower_instruction_mem(
         Instruction::Negate { operand } => {
             let dst = alloc_slot(builder, n * elem_sz);
             let n_val = builder.ins().iconst(types::I64, n as i64);
-            trt_call(
-                builder,
-                jit_module,
-                trt_ids.neg_f64,
-                &[dst, get(operand)?, n_val],
-            );
+            let fid = match rt.element_type {
+                ElementType::I32 | ElementType::UI32 => trt_ids.neg_i32,
+                ElementType::I64 | ElementType::UI64 => trt_ids.neg_i64,
+                _ => trt_ids.neg_f64,
+            };
+            trt_call(builder, jit_module, fid, &[dst, get(operand)?, n_val]);
             Ok(vec![vec![dst]])
         }
         Instruction::Sqrt { operand } => {
@@ -1238,15 +1302,15 @@ fn lower_instruction_mem(
             );
             Ok(vec![vec![dst]])
         }
-        Instruction::Abs { operand } if is_float(rt.element_type) => {
+        Instruction::Abs { operand } => {
             let dst = alloc_slot(builder, n * elem_sz);
             let n_val = builder.ins().iconst(types::I64, n as i64);
-            trt_call(
-                builder,
-                jit_module,
-                trt_ids.abs_f64,
-                &[dst, get(operand)?, n_val],
-            );
+            let fid = match rt.element_type {
+                ElementType::I32 | ElementType::UI32 => trt_ids.abs_i32,
+                ElementType::I64 | ElementType::UI64 => trt_ids.abs_i64,
+                _ => trt_ids.abs_f64,
+            };
+            trt_call(builder, jit_module, fid, &[dst, get(operand)?, n_val]);
             Ok(vec![vec![dst]])
         }
         Instruction::Floor { operand } => {
@@ -1341,14 +1405,21 @@ fn lower_instruction_mem(
                 }
             } else if matches!(l_ty.element_type, ElementType::I32 | ElementType::UI32) {
                 match direction {
+                    CompareDirection::Eq => trt_ids.cmp_eq_i32,
+                    CompareDirection::Ne => trt_ids.cmp_ne_i32,
                     CompareDirection::Lt => trt_ids.cmp_lt_i32,
-                    _ => trt_ids.cmp_eq_i64,
+                    CompareDirection::Le => trt_ids.cmp_le_i32,
+                    CompareDirection::Gt => trt_ids.cmp_gt_i32,
+                    CompareDirection::Ge => trt_ids.cmp_ge_i32,
                 }
             } else {
                 match direction {
                     CompareDirection::Eq => trt_ids.cmp_eq_i64,
+                    CompareDirection::Ne => trt_ids.cmp_ne_i64,
                     CompareDirection::Lt => trt_ids.cmp_lt_i64,
-                    _ => trt_ids.cmp_eq_i64,
+                    CompareDirection::Le => trt_ids.cmp_le_i64,
+                    CompareDirection::Gt => trt_ids.cmp_gt_i64,
+                    CompareDirection::Ge => trt_ids.cmp_ge_i64,
                 }
             };
             let dst = alloc_slot(builder, n);
@@ -1413,6 +1484,13 @@ fn lower_instruction_mem(
                 }
                 (ElementType::F64, ElementType::F32) => trt_ids.convert_f64_to_f32,
                 (ElementType::F32, ElementType::F64) => trt_ids.convert_f32_to_f64,
+                (ElementType::UI32, ElementType::I64) => trt_ids.convert_ui32_to_i64,
+                (ElementType::UI32, ElementType::F64) => trt_ids.convert_ui32_to_f64,
+                (ElementType::F64, ElementType::I1) => trt_ids.convert_f64_to_i1,
+                (ElementType::I64, ElementType::I1) => trt_ids.convert_i64_to_i1,
+                (ElementType::UI64, ElementType::F64) => trt_ids.convert_ui64_to_f64,
+                (ElementType::I32, ElementType::F32) => trt_ids.convert_i32_to_f32,
+                (ElementType::F32, ElementType::I32) => trt_ids.convert_f32_to_i32,
                 _ => {
                     return Err(format!(
                         "mem: unsupported convert {:?} -> {:?}",
@@ -1455,8 +1533,6 @@ fn lower_instruction_mem(
                 let nb = builder.ins().iconst(types::I64, (n * elem_sz) as i64);
                 builder.ins().call(memcpy_ref, &[dst, get(operand)?, nb]);
             } else {
-                let func_ref =
-                    jit_module.declare_func_in_func(trt_ids.broadcast_nd_f64, builder.func);
                 let n_dst_v = builder.ins().iconst(types::I64, n as i64);
                 let n_src_v = builder.ins().iconst(types::I64, src_n as i64);
                 let dst_shape_ptr = store_i64_array(builder, &rt.shape);
@@ -1464,20 +1540,14 @@ fn lower_instruction_mem(
                 let src_shape_ptr = store_i64_array(builder, &src_ty.shape);
                 let src_rank_v = builder.ins().iconst(types::I64, src_ty.rank() as i64);
                 let bd_ptr = store_i64_array(builder, broadcast_dims);
-                builder.ins().call(
-                    func_ref,
-                    &[
-                        dst,
-                        get(operand)?,
-                        n_dst_v,
-                        n_src_v,
-                        dst_shape_ptr,
-                        dst_rank_v,
-                        src_shape_ptr,
-                        src_rank_v,
-                        bd_ptr,
-                    ],
-                );
+                if is_float(rt.element_type) {
+                    let func_ref = jit_module.declare_func_in_func(trt_ids.broadcast_nd_f64, builder.func);
+                    builder.ins().call(func_ref, &[dst, get(operand)?, n_dst_v, n_src_v, dst_shape_ptr, dst_rank_v, src_shape_ptr, src_rank_v, bd_ptr]);
+                } else {
+                    let esz = builder.ins().iconst(types::I64, elem_sz as i64);
+                    let func_ref = jit_module.declare_func_in_func(trt_ids.broadcast_nd_generic, builder.func);
+                    builder.ins().call(func_ref, &[dst, get(operand)?, n_dst_v, n_src_v, dst_shape_ptr, dst_rank_v, src_shape_ptr, src_rank_v, bd_ptr, esz]);
+                }
             }
             Ok(vec![vec![dst]])
         }
@@ -1485,27 +1555,27 @@ fn lower_instruction_mem(
         Instruction::Transpose {
             operand,
             permutation,
-        } if is_float(rt.element_type) => {
+        } => {
             let src_ty = type_map.get(operand).cloned().unwrap_or(rt.clone());
             let dst = alloc_slot(builder, n * elem_sz);
-            if rt.rank() == 2 {
+            if is_float(rt.element_type) && rt.rank() == 2 {
                 let func_ref = jit_module.declare_func_in_func(trt_ids.transpose_f64, builder.func);
                 let rows_v = builder.ins().iconst(types::I64, src_ty.shape[0]);
                 let cols_v = builder.ins().iconst(types::I64, src_ty.shape[1]);
-                builder
-                    .ins()
-                    .call(func_ref, &[dst, get(operand)?, rows_v, cols_v]);
+                builder.ins().call(func_ref, &[dst, get(operand)?, rows_v, cols_v]);
             } else {
-                let func_ref =
-                    jit_module.declare_func_in_func(trt_ids.transpose_nd_f64, builder.func);
                 let n_val = builder.ins().iconst(types::I64, n as i64);
                 let shape_ptr = store_i64_array(builder, &src_ty.shape);
                 let perm_ptr = store_i64_array(builder, permutation);
                 let rank_v = builder.ins().iconst(types::I64, src_ty.rank() as i64);
-                builder.ins().call(
-                    func_ref,
-                    &[dst, get(operand)?, n_val, shape_ptr, perm_ptr, rank_v],
-                );
+                if is_float(rt.element_type) {
+                    let func_ref = jit_module.declare_func_in_func(trt_ids.transpose_nd_f64, builder.func);
+                    builder.ins().call(func_ref, &[dst, get(operand)?, n_val, shape_ptr, perm_ptr, rank_v]);
+                } else {
+                    let esz = builder.ins().iconst(types::I64, elem_sz as i64);
+                    let func_ref = jit_module.declare_func_in_func(trt_ids.transpose_nd_generic, builder.func);
+                    builder.ins().call(func_ref, &[dst, get(operand)?, n_val, shape_ptr, perm_ptr, rank_v, esz]);
+                }
             }
             Ok(vec![vec![dst]])
         }
@@ -1518,26 +1588,20 @@ fn lower_instruction_mem(
             let src_ty = type_map.get(operand).cloned().unwrap_or(rt.clone());
             let n_src = src_ty.num_elements();
             let dst = alloc_slot(builder, n * elem_sz);
-            let func_ref = jit_module.declare_func_in_func(trt_ids.slice_f64, builder.func);
             let n_dst_v = builder.ins().iconst(types::I64, n as i64);
             let n_src_v = builder.ins().iconst(types::I64, n_src as i64);
             let shape_ptr = store_i64_array(builder, &src_ty.shape);
             let rank_v = builder.ins().iconst(types::I64, src_ty.rank() as i64);
             let starts_ptr = store_i64_array(builder, start_indices);
             let limits_ptr = store_i64_array(builder, limit_indices);
-            builder.ins().call(
-                func_ref,
-                &[
-                    dst,
-                    get(operand)?,
-                    n_dst_v,
-                    n_src_v,
-                    shape_ptr,
-                    rank_v,
-                    starts_ptr,
-                    limits_ptr,
-                ],
-            );
+            if is_float(rt.element_type) {
+                let func_ref = jit_module.declare_func_in_func(trt_ids.slice_f64, builder.func);
+                builder.ins().call(func_ref, &[dst, get(operand)?, n_dst_v, n_src_v, shape_ptr, rank_v, starts_ptr, limits_ptr]);
+            } else {
+                let esz = builder.ins().iconst(types::I64, elem_sz as i64);
+                let func_ref = jit_module.declare_func_in_func(trt_ids.slice_generic, builder.func);
+                builder.ins().call(func_ref, &[dst, get(operand)?, n_dst_v, n_src_v, shape_ptr, rank_v, starts_ptr, limits_ptr, esz]);
+            }
             Ok(vec![vec![dst]])
         }
 
@@ -1647,7 +1711,6 @@ fn lower_instruction_mem(
             let src_ty = type_map.get(operand).cloned().unwrap_or(rt.clone());
             let n_src = src_ty.num_elements();
             let dst = alloc_slot(builder, n * elem_sz);
-            let func_ref = jit_module.declare_func_in_func(trt_ids.dynamic_slice_f64, builder.func);
             let n_dst_v = builder.ins().iconst(types::I64, n as i64);
             let n_src_v = builder.ins().iconst(types::I64, n_src as i64);
             let shape_ptr = store_i64_array(builder, &src_ty.shape);
@@ -1668,24 +1731,17 @@ fn lower_instruction_mem(
                 } else {
                     raw
                 };
-                builder
-                    .ins()
-                    .store(MemFlags::trusted(), idx_val, starts_ss, (i * 8) as i32);
+                builder.ins().store(MemFlags::trusted(), idx_val, starts_ss, (i * 8) as i32);
             }
 
-            builder.ins().call(
-                func_ref,
-                &[
-                    dst,
-                    get(operand)?,
-                    n_dst_v,
-                    n_src_v,
-                    shape_ptr,
-                    rank_v,
-                    starts_ss,
-                    sizes_ptr,
-                ],
-            );
+            if is_float(rt.element_type) {
+                let func_ref = jit_module.declare_func_in_func(trt_ids.dynamic_slice_f64, builder.func);
+                builder.ins().call(func_ref, &[dst, get(operand)?, n_dst_v, n_src_v, shape_ptr, rank_v, starts_ss, sizes_ptr]);
+            } else {
+                let esz = builder.ins().iconst(types::I64, elem_sz as i64);
+                let func_ref = jit_module.declare_func_in_func(trt_ids.dynamic_slice_generic, builder.func);
+                builder.ins().call(func_ref, &[dst, get(operand)?, n_dst_v, n_src_v, shape_ptr, rank_v, starts_ss, sizes_ptr, esz]);
+            }
             Ok(vec![vec![dst]])
         }
 
@@ -1699,8 +1755,6 @@ fn lower_instruction_mem(
             let n_src = src_ty.num_elements();
             let n_upd = upd_ty.num_elements();
             let dst = alloc_slot(builder, n * elem_sz);
-            let func_ref =
-                jit_module.declare_func_in_func(trt_ids.dynamic_update_slice_f64, builder.func);
             let n_src_v = builder.ins().iconst(types::I64, n_src as i64);
             let n_upd_v = builder.ins().iconst(types::I64, n_upd as i64);
             let shape_ptr = store_i64_array(builder, &src_ty.shape);
@@ -1721,25 +1775,17 @@ fn lower_instruction_mem(
                 } else {
                     raw
                 };
-                builder
-                    .ins()
-                    .store(MemFlags::trusted(), idx_val, starts_ss, (i * 8) as i32);
+                builder.ins().store(MemFlags::trusted(), idx_val, starts_ss, (i * 8) as i32);
             }
 
-            builder.ins().call(
-                func_ref,
-                &[
-                    dst,
-                    get(operand)?,
-                    get(update)?,
-                    n_src_v,
-                    n_upd_v,
-                    shape_ptr,
-                    rank_v,
-                    starts_ss,
-                    upd_shape_ptr,
-                ],
-            );
+            if is_float(rt.element_type) {
+                let func_ref = jit_module.declare_func_in_func(trt_ids.dynamic_update_slice_f64, builder.func);
+                builder.ins().call(func_ref, &[dst, get(operand)?, get(update)?, n_src_v, n_upd_v, shape_ptr, rank_v, starts_ss, upd_shape_ptr]);
+            } else {
+                let esz = builder.ins().iconst(types::I64, elem_sz as i64);
+                let func_ref = jit_module.declare_func_in_func(trt_ids.dynamic_update_slice_generic, builder.func);
+                builder.ins().call(func_ref, &[dst, get(operand)?, get(update)?, n_src_v, n_upd_v, shape_ptr, rank_v, starts_ss, upd_shape_ptr, esz]);
+            }
             Ok(vec![vec![dst]])
         }
 
@@ -1780,17 +1826,11 @@ fn lower_instruction_mem(
 
             let dst = alloc_slot(builder, n * elem_sz);
 
+            let use_generic = !matches!(src_ty.element_type, ElementType::F64);
+            let n_src_v = builder.ins().iconst(types::I64, src_ty.num_elements() as i64);
+
             if use_nd {
-                let n_batch = if idx_rank > 1 {
-                    n_total_idx / n_index_dims
-                } else {
-                    1
-                };
-                let func_ref =
-                    jit_module.declare_func_in_func(trt_ids.gather_nd_f64, builder.func);
-                let n_src_v = builder
-                    .ins()
-                    .iconst(types::I64, src_ty.num_elements() as i64);
+                let n_batch = if idx_rank > 1 { n_total_idx / n_index_dims } else { 1 };
                 let n_batch_v = builder.ins().iconst(types::I64, n_batch as i64);
                 let n_idx_dims_v = builder.ins().iconst(types::I64, n_index_dims as i64);
                 let src_shape_ptr = store_i64_array(builder, &src_ty.shape);
@@ -1798,22 +1838,14 @@ fn lower_instruction_mem(
                 let sim_ptr = store_i64_array(builder, &dims.start_index_map);
                 let ss_ptr = store_i64_array(builder, slice_sizes);
                 let n_dst_v = builder.ins().iconst(types::I64, n as i64);
-                builder.ins().call(
-                    func_ref,
-                    &[
-                        dst,
-                        get(operand)?,
-                        n_src_v,
-                        widened_idx,
-                        n_batch_v,
-                        n_idx_dims_v,
-                        src_shape_ptr,
-                        src_rank_v,
-                        sim_ptr,
-                        ss_ptr,
-                        n_dst_v,
-                    ],
-                );
+                if use_generic {
+                    let esz = builder.ins().iconst(types::I64, elem_sz as i64);
+                    let func_ref = jit_module.declare_func_in_func(trt_ids.gather_nd_generic, builder.func);
+                    builder.ins().call(func_ref, &[dst, get(operand)?, n_src_v, widened_idx, n_batch_v, n_idx_dims_v, src_shape_ptr, src_rank_v, sim_ptr, ss_ptr, n_dst_v, esz]);
+                } else {
+                    let func_ref = jit_module.declare_func_in_func(trt_ids.gather_nd_f64, builder.func);
+                    builder.ins().call(func_ref, &[dst, get(operand)?, n_src_v, widened_idx, n_batch_v, n_idx_dims_v, src_shape_ptr, src_rank_v, sim_ptr, ss_ptr, n_dst_v]);
+                }
             } else {
                 let n_idx = if !dims.collapsed_slice_dims.is_empty() {
                     idx_ty.shape.first().copied().unwrap_or(1) as usize
@@ -1821,17 +1853,16 @@ fn lower_instruction_mem(
                     n_total_idx
                 };
                 let row_size = if n_idx > 0 { n / n_idx } else { 1 };
-                let func_ref =
-                    jit_module.declare_func_in_func(trt_ids.gather_f64, builder.func);
-                let n_src_v = builder
-                    .ins()
-                    .iconst(types::I64, src_ty.num_elements() as i64);
                 let n_idx_v = builder.ins().iconst(types::I64, n_idx as i64);
                 let row_v = builder.ins().iconst(types::I64, row_size as i64);
-                builder.ins().call(
-                    func_ref,
-                    &[dst, get(operand)?, n_src_v, widened_idx, n_idx_v, row_v],
-                );
+                if use_generic {
+                    let esz = builder.ins().iconst(types::I64, elem_sz as i64);
+                    let func_ref = jit_module.declare_func_in_func(trt_ids.gather_generic, builder.func);
+                    builder.ins().call(func_ref, &[dst, get(operand)?, n_src_v, widened_idx, n_idx_v, row_v, esz]);
+                } else {
+                    let func_ref = jit_module.declare_func_in_func(trt_ids.gather_f64, builder.func);
+                    builder.ins().call(func_ref, &[dst, get(operand)?, n_src_v, widened_idx, n_idx_v, row_v]);
+                }
             }
             Ok(vec![vec![dst]])
         }
@@ -1869,22 +1900,17 @@ fn lower_instruction_mem(
                 idx_ptr
             };
             let dst = alloc_slot(builder, n * elem_sz);
-            let func_ref = jit_module.declare_func_in_func(trt_ids.scatter_f64, builder.func);
             let n_src_v = builder.ins().iconst(types::I64, n_src as i64);
             let n_upd_v = builder.ins().iconst(types::I64, n_updates as i64);
             let inner_v = builder.ins().iconst(types::I64, inner_size as i64);
-            builder.ins().call(
-                func_ref,
-                &[
-                    dst,
-                    get(operand)?,
-                    n_src_v,
-                    widened_idx,
-                    get(updates)?,
-                    n_upd_v,
-                    inner_v,
-                ],
-            );
+            if matches!(src_ty.element_type, ElementType::F64) {
+                let func_ref = jit_module.declare_func_in_func(trt_ids.scatter_f64, builder.func);
+                builder.ins().call(func_ref, &[dst, get(operand)?, n_src_v, widened_idx, get(updates)?, n_upd_v, inner_v]);
+            } else {
+                let esz = builder.ins().iconst(types::I64, elem_sz as i64);
+                let func_ref = jit_module.declare_func_in_func(trt_ids.scatter_generic, builder.func);
+                builder.ins().call(func_ref, &[dst, get(operand)?, n_src_v, widened_idx, get(updates)?, n_upd_v, inner_v, esz]);
+            }
             Ok(vec![vec![dst]])
         }
 
@@ -1923,11 +1949,15 @@ fn lower_instruction_mem(
             dimensions: _,
         } => {
             let src_ty = type_map.get(operand).cloned().unwrap_or(rt.clone());
-            let func_id = match op {
-                ReduceOp::Add => trt_ids.reduce_sum_f64,
-                ReduceOp::Maximum => trt_ids.reduce_max_f64,
-                ReduceOp::Minimum => trt_ids.reduce_min_f64,
-                ReduceOp::And | ReduceOp::Or => {
+            let use_int = !is_float(src_ty.element_type);
+            let func_id = match (op, use_int) {
+                (ReduceOp::Add, false) => trt_ids.reduce_sum_f64,
+                (ReduceOp::Add, true) => trt_ids.reduce_sum_i64,
+                (ReduceOp::Maximum, false) => trt_ids.reduce_max_f64,
+                (ReduceOp::Maximum, true) => trt_ids.reduce_max_i64,
+                (ReduceOp::Minimum, false) => trt_ids.reduce_min_f64,
+                (ReduceOp::Minimum, true) => trt_ids.reduce_min_i64,
+                (ReduceOp::And | ReduceOp::Or, _) => {
                     return Err(format!("mem: reduce {:?} not yet supported", op));
                 }
             };
@@ -2171,9 +2201,24 @@ fn lower_instruction_mem(
             }
         }
 
-        Instruction::Atan2 { .. } => Err("mem: atan2 not yet supported".into()),
-        Instruction::Acos { .. } => Err("mem: acos not yet supported".into()),
-        Instruction::ErfInv { .. } => Err("mem: erf_inv not yet supported".into()),
+        Instruction::Atan2 { lhs, rhs } => {
+            let dst = alloc_slot(builder, n * elem_sz);
+            let n_val = builder.ins().iconst(types::I64, n as i64);
+            trt_call(builder, jit_module, trt_ids.atan2_f64, &[dst, get(lhs)?, get(rhs)?, n_val]);
+            Ok(vec![vec![dst]])
+        }
+        Instruction::Acos { operand } => {
+            let dst = alloc_slot(builder, n * elem_sz);
+            let n_val = builder.ins().iconst(types::I64, n as i64);
+            trt_call(builder, jit_module, trt_ids.acos_f64, &[dst, get(operand)?, n_val]);
+            Ok(vec![vec![dst]])
+        }
+        Instruction::ErfInv { operand } => {
+            let dst = alloc_slot(builder, n * elem_sz);
+            let n_val = builder.ins().iconst(types::I64, n as i64);
+            trt_call(builder, jit_module, trt_ids.erf_inv_f64, &[dst, get(operand)?, n_val]);
+            Ok(vec![vec![dst]])
+        }
         Instruction::Tan { operand } => {
             let dst = alloc_slot(builder, n * elem_sz);
             let n_val = builder.ins().iconst(types::I64, n as i64);
@@ -2198,10 +2243,29 @@ fn lower_instruction_mem(
         }
         Instruction::BitcastConvert { operand } => Ok(vec![vec![get(operand)?]]),
         Instruction::RoundNearestEven { operand } => {
-            Err("mem: round_nearest_even not yet supported".into())
+            let dst = alloc_slot(builder, n * elem_sz);
+            let n_val = builder.ins().iconst(types::I64, n as i64);
+            trt_call(builder, jit_module, trt_ids.round_f64, &[dst, get(operand)?, n_val]);
+            Ok(vec![vec![dst]])
         }
-        Instruction::Reverse { .. } => Err("mem: reverse not yet supported".into()),
-        Instruction::Clamp { .. } => Err("mem: clamp not yet supported".into()),
+        Instruction::Reverse { operand, dimensions } => {
+            let src_ty = type_map.get(operand).cloned().unwrap_or(rt.clone());
+            let dst = alloc_slot(builder, n * elem_sz);
+            let n_val = builder.ins().iconst(types::I64, n as i64);
+            let shape_ptr = store_i64_array(builder, &src_ty.shape);
+            let rank_val = builder.ins().iconst(types::I64, src_ty.rank() as i64);
+            let dims_ptr = store_i64_array(builder, dimensions);
+            let n_dims_val = builder.ins().iconst(types::I64, dimensions.len() as i64);
+            let func_ref = jit_module.declare_func_in_func(trt_ids.reverse_f64, builder.func);
+            builder.ins().call(func_ref, &[dst, get(operand)?, n_val, shape_ptr, rank_val, dims_ptr, n_dims_val]);
+            Ok(vec![vec![dst]])
+        }
+        Instruction::Clamp { operand, min, max } => {
+            let dst = alloc_slot(builder, n * elem_sz);
+            let n_val = builder.ins().iconst(types::I64, n as i64);
+            trt_call(builder, jit_module, trt_ids.clamp_f64, &[dst, get(operand)?, get(min)?, get(max)?, n_val]);
+            Ok(vec![vec![dst]])
+        }
         Instruction::Case { index, branches } => {
             let idx_ptr = get(index)?;
             let idx = builder
@@ -2293,6 +2357,53 @@ fn lower_instruction_mem(
         } => Err(format!("mem: custom_call not yet supported: {call_target}")),
 
         Instruction::Return { .. } => Ok(vec![]),
+
+        Instruction::Rsqrt { operand } => {
+            let dst = alloc_slot(builder, n * elem_sz);
+            let n_val = builder.ins().iconst(types::I64, n as i64);
+            trt_call(builder, jit_module, trt_ids.rsqrt_f64, &[dst, get(operand)?, n_val]);
+            Ok(vec![vec![dst]])
+        }
+        Instruction::Log1p { operand } => {
+            let dst = alloc_slot(builder, n * elem_sz);
+            let n_val = builder.ins().iconst(types::I64, n as i64);
+            trt_call(builder, jit_module, trt_ids.log1p_f64, &[dst, get(operand)?, n_val]);
+            Ok(vec![vec![dst]])
+        }
+        Instruction::Ceil { operand } => {
+            let dst = alloc_slot(builder, n * elem_sz);
+            let n_val = builder.ins().iconst(types::I64, n as i64);
+            trt_call(builder, jit_module, trt_ids.ceil_f64, &[dst, get(operand)?, n_val]);
+            Ok(vec![vec![dst]])
+        }
+        Instruction::IsFinite { operand } => {
+            let dst = alloc_slot(builder, n);
+            let n_val = builder.ins().iconst(types::I64, n as i64);
+            let func_ref = jit_module.declare_func_in_func(trt_ids.is_finite_f64, builder.func);
+            builder.ins().call(func_ref, &[dst, get(operand)?, n_val]);
+            Ok(vec![vec![dst]])
+        }
+        Instruction::Not { operand } => {
+            let dst = alloc_slot(builder, n * elem_sz);
+            let n_val = builder.ins().iconst(types::I64, n as i64);
+            let fid = match rt.element_type {
+                ElementType::I1 => trt_ids.not_i1,
+                ElementType::I32 | ElementType::UI32 => trt_ids.not_i32,
+                _ => trt_ids.not_i64,
+            };
+            trt_call(builder, jit_module, fid, &[dst, get(operand)?, n_val]);
+            Ok(vec![vec![dst]])
+        }
+        Instruction::ShiftRightArithmetic { lhs, rhs } => {
+            let dst = alloc_slot(builder, n * elem_sz);
+            let n_val = builder.ins().iconst(types::I64, n as i64);
+            let fid = match rt.element_type {
+                ElementType::I32 | ElementType::UI32 => trt_ids.sshr_i32,
+                _ => trt_ids.sshr_i64,
+            };
+            trt_call(builder, jit_module, fid, &[dst, get(lhs)?, get(rhs)?, n_val]);
+            Ok(vec![vec![dst]])
+        }
 
         other => Err(format!("mem: unsupported instruction: {other:?}")),
     }
@@ -3266,6 +3377,60 @@ fn lower_instruction(
             libm_ids,
             backend_config,
         ),
+
+        Instruction::Rsqrt { operand } => {
+            let vals = get_vals(value_map, operand)?;
+            let out: Vec<Value> = vals.iter().map(|&v| {
+                let s = builder.ins().sqrt(v);
+                let one = builder.ins().f64const(1.0);
+                builder.ins().fdiv(one, s)
+            }).collect();
+            Ok(vec![out])
+        }
+
+        Instruction::Log1p { operand } => {
+            lower_libm_unary(builder, value_map, operand, libm_ids.log1p, jit_module)
+        }
+
+        Instruction::IsFinite { operand } => {
+            let vals = get_vals(value_map, operand)?;
+            let one = builder.ins().iconst(types::I8, 1);
+            let zero = builder.ins().iconst(types::I8, 0);
+            let out: Vec<Value> = vals.iter().map(|&v| {
+                let abs_v = builder.ins().fabs(v);
+                let inf = builder.ins().f64const(f64::INFINITY);
+                let is_fin = builder.ins().fcmp(cranelift_codegen::ir::condcodes::FloatCC::LessThan, abs_v, inf);
+                builder.ins().select(is_fin, one, zero)
+            }).collect();
+            Ok(vec![out])
+        }
+
+        Instruction::Not { operand } => {
+            let vals = get_vals(value_map, operand)?;
+            let et = rt.element_type;
+            let out: Vec<Value> = vals.iter().map(|&v| {
+                if matches!(et, ElementType::I1) {
+                    let one = builder.ins().iconst(cranelift_codegen::ir::types::I8, 1);
+                    builder.ins().bxor(v, one)
+                } else {
+                    builder.ins().bnot(v)
+                }
+            }).collect();
+            Ok(vec![out])
+        }
+
+        Instruction::Ceil { operand } => {
+            let vals = get_vals(value_map, operand)?;
+            let out: Vec<Value> = vals.iter().map(|&v| builder.ins().ceil(v)).collect();
+            Ok(vec![out])
+        }
+
+        Instruction::ShiftRightArithmetic { lhs, rhs } => {
+            let l = get_vals(value_map, lhs)?;
+            let r = get_vals(value_map, rhs)?;
+            let out = elementwise_binop(builder, l, r, |b, a, c| b.ins().sshr(a, c));
+            Ok(vec![out])
+        }
 
         Instruction::Return { .. } => Ok(vec![]),
     }

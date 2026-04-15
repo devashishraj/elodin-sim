@@ -254,6 +254,15 @@ fn parse_op(
             |l, r| Instruction::ShiftRightLogical { lhs: l, rhs: r },
         );
     }
+    if input.starts_with("stablehlo.shift_right_arithmetic") {
+        return parse_binary_op(
+            input,
+            ctx,
+            result_names,
+            "stablehlo.shift_right_arithmetic",
+            |l, r| Instruction::ShiftRightArithmetic { lhs: l, rhs: r },
+        );
+    }
     if input.starts_with("stablehlo.negate") {
         return parse_unary_op(input, ctx, result_names, "stablehlo.negate", |o| {
             Instruction::Negate { operand: o }
@@ -262,6 +271,31 @@ fn parse_op(
     if input.starts_with("stablehlo.sqrt") {
         return parse_unary_op(input, ctx, result_names, "stablehlo.sqrt", |o| {
             Instruction::Sqrt { operand: o }
+        });
+    }
+    if input.starts_with("stablehlo.rsqrt") {
+        return parse_unary_op(input, ctx, result_names, "stablehlo.rsqrt", |o| {
+            Instruction::Rsqrt { operand: o }
+        });
+    }
+    if input.starts_with("stablehlo.log_plus_one") {
+        return parse_unary_op(input, ctx, result_names, "stablehlo.log_plus_one", |o| {
+            Instruction::Log1p { operand: o }
+        });
+    }
+    if input.starts_with("stablehlo.is_finite") {
+        return parse_unary_op(input, ctx, result_names, "stablehlo.is_finite", |o| {
+            Instruction::IsFinite { operand: o }
+        });
+    }
+    if input.starts_with("stablehlo.not") {
+        return parse_unary_op(input, ctx, result_names, "stablehlo.not", |o| {
+            Instruction::Not { operand: o }
+        });
+    }
+    if input.starts_with("stablehlo.ceil") {
+        return parse_unary_op(input, ctx, result_names, "stablehlo.ceil", |o| {
+            Instruction::Ceil { operand: o }
         });
     }
     if input.starts_with("stablehlo.convert") {
