@@ -6,6 +6,7 @@ use std::{
     path::PathBuf,
 };
 use stellarator::util::CancelToken;
+use tokio::io::AsyncBufReadExt;
 use tokio::process::Command;
 use tracing::{debug, error};
 use which::which;
@@ -108,8 +109,13 @@ impl SimRecipe {
 
         let mut cmd = python_tokio_command()?;
         configure_sim_command(&mut cmd);
-        // Close stdin to prevent SIGTTIN when child is in background process group
+        // Close stdin to prevent SIGTTIN when child is in background process group.
+        // Pipe stdout/stderr so the child (in its own process group via
+        // process_group(0)) writes to pipes instead of the terminal, preventing
+        // SIGTTOU from stopping the process on macOS.
         cmd.stdin(Stdio::null());
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
         cmd.env("TRACY_PORT", "8089");
         let port = crate::liveness::serve_tokio().await?;
         let mut child = cmd
@@ -120,6 +126,25 @@ impl SimRecipe {
             .arg(port.to_string())
             .spawn()?;
         let child_pid = child.id().map(|pid| nix::unistd::Pid::from_raw(pid as i32));
+
+        if let Some(stdout) = child.stdout.take() {
+            tokio::spawn(async move {
+                let reader = tokio::io::BufReader::new(stdout);
+                let mut lines = reader.lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    eprintln!("sim {line}");
+                }
+            });
+        }
+        if let Some(stderr) = child.stderr.take() {
+            tokio::spawn(async move {
+                let reader = tokio::io::BufReader::new(stderr);
+                let mut lines = reader.lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    eprintln!("sim {line}");
+                }
+            });
+        }
 
         tokio::select! {
             _ = cancel_token.wait() => {
