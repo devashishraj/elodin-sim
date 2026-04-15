@@ -64,6 +64,16 @@ binary_int_op!(tensor_sub_i32, i32, |a: i32, b: i32| a.wrapping_sub(b));
 binary_int_op!(tensor_mul_i32, i32, |a: i32, b: i32| a.wrapping_mul(b));
 binary_int_op!(tensor_sshr_i64, i64, |a: i64, b: i64| a.wrapping_shr(b as u32));
 binary_int_op!(tensor_sshr_i32, i32, |a: i32, b: i32| a.wrapping_shr(b as u32));
+binary_int_op!(tensor_xor_i64, i64, |a: i64, b: i64| a ^ b);
+binary_int_op!(tensor_xor_i32, i32, |a: i32, b: i32| a ^ b);
+binary_int_op!(tensor_or_i64, i64, |a: i64, b: i64| a | b);
+binary_int_op!(tensor_or_i32, i32, |a: i32, b: i32| a | b);
+binary_int_op!(tensor_and_i64, i64, |a: i64, b: i64| a & b);
+binary_int_op!(tensor_and_i32, i32, |a: i32, b: i32| a & b);
+binary_int_op!(tensor_shl_i64, i64, |a: i64, b: i64| a.wrapping_shl(b as u32));
+binary_int_op!(tensor_shl_i32, i32, |a: i32, b: i32| a.wrapping_shl(b as u32));
+binary_int_op!(tensor_ushr_i64, i64, |a: i64, b: i64| ((a as u64).wrapping_shr(b as u32)) as i64);
+binary_int_op!(tensor_ushr_i32, i32, |a: i32, b: i32| ((a as u32).wrapping_shr(b as u32)) as i32);
 binary_int_op!(tensor_max_i64, i64, |a: i64, b: i64| a.max(b));
 binary_int_op!(tensor_min_i64, i64, |a: i64, b: i64| a.min(b));
 binary_int_op!(tensor_max_i32, i32, |a: i32, b: i32| a.max(b));
@@ -196,7 +206,7 @@ pub extern "C" fn tensor_erf_inv_f64(dst: *mut f64, a: *const f64, n: usize) {
     }
 }
 
-fn erf_inv_impl(x: f64) -> f64 {
+pub(crate) fn erf_inv_impl(x: f64) -> f64 {
     if x <= -1.0 {
         return f64::NEG_INFINITY;
     }
@@ -257,7 +267,7 @@ fn ndtri_impl(y0: f64) -> f64 {
         return x * s2pi;
     }
     let mut x = (-2.0 * y.ln()).sqrt();
-    let x0 = x - (2.0f64 * std::f64::consts::PI).ln() / (2.0 * x);
+    let x0 = x - x.ln() / x;
     let z = 1.0 / x;
     let x1 = if x < 8.0 {
         z * poly_eval(z, &P1) / poly_eval_1(z, &Q1)
@@ -543,122 +553,6 @@ reduce_int_op!(tensor_reduce_max_i64, i64, i64::MIN, |acc: i64, v: i64| acc.max(
 reduce_int_op!(tensor_reduce_min_i64, i64, i64::MAX, |acc: i64, v: i64| acc.min(v));
 
 // ---------------------------------------------------------------------------
-// Scatter: operand[indices[i]] = updates[i]
-// ---------------------------------------------------------------------------
-
-pub extern "C" fn tensor_scatter_f64(
-    dst: *mut f64,
-    src: *const f64,
-    n_src: usize,
-    indices: *const i64,
-    updates: *const f64,
-    n_updates: usize,
-    inner_size: usize,
-) {
-    let src = unsafe { slice::from_raw_parts(src, n_src) };
-    let dst = unsafe { slice::from_raw_parts_mut(dst, n_src) };
-    dst.copy_from_slice(src);
-    let indices = unsafe { slice::from_raw_parts(indices, n_updates) };
-    let updates = unsafe { slice::from_raw_parts(updates, n_updates * inner_size) };
-    for i in 0..n_updates {
-        let idx = indices[i] as usize;
-        let base = idx * inner_size;
-        for j in 0..inner_size {
-            if base + j < n_src {
-                dst[base + j] = updates[i * inner_size + j];
-            }
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Gather: simple row-select pattern
-// ---------------------------------------------------------------------------
-
-pub extern "C" fn tensor_gather_f64(
-    dst: *mut f64,
-    src: *const f64,
-    n_src: usize,
-    indices: *const i64,
-    n_indices: usize,
-    row_size: usize,
-) {
-    let src = unsafe { slice::from_raw_parts(src, n_src) };
-    let dst = unsafe { slice::from_raw_parts_mut(dst, n_indices * row_size) };
-    let indices = unsafe { slice::from_raw_parts(indices, n_indices) };
-    for i in 0..n_indices {
-        let idx = indices[i] as usize;
-        let src_off = idx * row_size;
-        let dst_off = i * row_size;
-        if src_off + row_size <= n_src {
-            dst[dst_off..dst_off + row_size].copy_from_slice(&src[src_off..src_off + row_size]);
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// N-D indexed gather
-// ---------------------------------------------------------------------------
-
-pub extern "C" fn tensor_gather_nd_f64(
-    dst: *mut f64,
-    src: *const f64,
-    n_src: usize,
-    indices: *const i64,
-    n_batch: usize,
-    n_index_dims: usize,
-    src_shape: *const i64,
-    src_rank: usize,
-    start_index_map: *const i64,
-    slice_sizes: *const i64,
-    n_dst: usize,
-) {
-    let src = unsafe { slice::from_raw_parts(src, n_src) };
-    let dst = unsafe { slice::from_raw_parts_mut(dst, n_dst) };
-    let indices = unsafe { slice::from_raw_parts(indices, n_batch * n_index_dims) };
-    let src_shape = unsafe { slice::from_raw_parts(src_shape, src_rank) };
-    let start_index_map = unsafe { slice::from_raw_parts(start_index_map, n_index_dims) };
-    let slice_sizes = unsafe { slice::from_raw_parts(slice_sizes, src_rank) };
-
-    let mut src_strides = vec![1usize; src_rank];
-    for i in (0..src_rank.saturating_sub(1)).rev() {
-        src_strides[i] = src_strides[i + 1] * src_shape[i + 1] as usize;
-    }
-
-    let slice_elems: usize = slice_sizes.iter().map(|&s| s as usize).product();
-
-    let mut slice_strides = vec![1usize; src_rank];
-    for i in (0..src_rank.saturating_sub(1)).rev() {
-        slice_strides[i] = slice_strides[i + 1] * slice_sizes[i + 1] as usize;
-    }
-
-    let mut dst_off = 0usize;
-    for b in 0..n_batch {
-        let mut base_flat = 0usize;
-        for j in 0..n_index_dims {
-            let idx = indices[b * n_index_dims + j] as usize;
-            let dim = start_index_map[j] as usize;
-            let clamped = idx.min((src_shape[dim] as usize).saturating_sub(slice_sizes[dim] as usize));
-            base_flat += clamped * src_strides[dim];
-        }
-
-        for s in 0..slice_elems {
-            let mut src_flat = base_flat;
-            let mut rem = s;
-            for d in 0..src_rank {
-                let coord = rem / slice_strides[d];
-                rem %= slice_strides[d];
-                src_flat += coord * src_strides[d];
-            }
-            if dst_off < n_dst && src_flat < n_src {
-                dst[dst_off] = src[src_flat];
-            }
-            dst_off += 1;
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Byte-generic gather: row-select with explicit element size
 // ---------------------------------------------------------------------------
 
@@ -802,100 +696,6 @@ pub extern "C" fn tensor_matmul_f64(
     }
 }
 
-// ---------------------------------------------------------------------------
-// N-dimensional broadcast
-// ---------------------------------------------------------------------------
-
-pub extern "C" fn tensor_broadcast_nd_f64(
-    dst: *mut f64,
-    src: *const f64,
-    n_dst: usize,
-    n_src: usize,
-    dst_shape: *const i64,
-    dst_rank: usize,
-    src_shape: *const i64,
-    src_rank: usize,
-    broadcast_dims: *const i64,
-) {
-    let dst = unsafe { slice::from_raw_parts_mut(dst, n_dst) };
-    let src = unsafe { slice::from_raw_parts(src, n_src) };
-    let dst_shape = unsafe { slice::from_raw_parts(dst_shape, dst_rank) };
-    let src_shape = unsafe { slice::from_raw_parts(src_shape, src_rank) };
-    let broadcast_dims = unsafe { slice::from_raw_parts(broadcast_dims, src_rank) };
-
-    let mut dst_strides = vec![1usize; dst_rank];
-    for i in (0..dst_rank.saturating_sub(1)).rev() {
-        dst_strides[i] = dst_strides[i + 1] * dst_shape[i + 1] as usize;
-    }
-
-    let mut src_strides = vec![1usize; src_rank];
-    for i in (0..src_rank.saturating_sub(1)).rev() {
-        src_strides[i] = src_strides[i + 1] * src_shape[i + 1] as usize;
-    }
-
-    for flat_dst in 0..n_dst {
-        let mut src_idx = 0usize;
-        let mut remaining = flat_dst;
-        for d in 0..dst_rank {
-            let coord = remaining / dst_strides[d];
-            remaining %= dst_strides[d];
-
-            for (s, &bd) in broadcast_dims.iter().enumerate() {
-                if bd as usize == d {
-                    let src_coord = if src_shape[s] == 1 { 0 } else { coord };
-                    src_idx += src_coord * src_strides[s];
-                }
-            }
-        }
-        dst[flat_dst] = src[src_idx.min(n_src.saturating_sub(1))];
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Slice
-// ---------------------------------------------------------------------------
-
-pub extern "C" fn tensor_slice_f64(
-    dst: *mut f64,
-    src: *const f64,
-    n_dst: usize,
-    n_src: usize,
-    shape: *const i64,
-    rank: usize,
-    starts: *const i64,
-    limits: *const i64,
-) {
-    let src = unsafe { slice::from_raw_parts(src, n_src) };
-    let dst = unsafe { slice::from_raw_parts_mut(dst, n_dst) };
-    let shape = unsafe { slice::from_raw_parts(shape, rank) };
-    let starts = unsafe { slice::from_raw_parts(starts, rank) };
-    let limits = unsafe { slice::from_raw_parts(limits, rank) };
-
-    let mut src_strides = vec![1usize; rank];
-    for i in (0..rank.saturating_sub(1)).rev() {
-        src_strides[i] = src_strides[i + 1] * shape[i + 1] as usize;
-    }
-
-    let mut dst_shape = Vec::with_capacity(rank);
-    for d in 0..rank {
-        dst_shape.push((limits[d] - starts[d]) as usize);
-    }
-    let mut dst_strides = vec![1usize; rank];
-    for i in (0..rank.saturating_sub(1)).rev() {
-        dst_strides[i] = dst_strides[i + 1] * dst_shape[i + 1];
-    }
-
-    for flat_dst in 0..n_dst {
-        let mut src_flat = 0usize;
-        let mut remaining = flat_dst;
-        for d in 0..rank {
-            let coord = remaining / dst_strides[d];
-            remaining %= dst_strides[d];
-            src_flat += (starts[d] as usize + coord) * src_strides[d];
-        }
-        dst[flat_dst] = src[src_flat];
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Concatenate along a dimension
@@ -1040,95 +840,7 @@ pub extern "C" fn tensor_pad_f64(
 }
 
 // ---------------------------------------------------------------------------
-// Dynamic slice / dynamic update slice
-// ---------------------------------------------------------------------------
-
-pub extern "C" fn tensor_dynamic_slice_f64(
-    dst: *mut f64,
-    src: *const f64,
-    n_dst: usize,
-    n_src: usize,
-    shape: *const i64,
-    rank: usize,
-    start_indices: *const i64,
-    slice_sizes: *const i64,
-) {
-    let src = unsafe { slice::from_raw_parts(src, n_src) };
-    let dst = unsafe { slice::from_raw_parts_mut(dst, n_dst) };
-    let shape = unsafe { slice::from_raw_parts(shape, rank) };
-    let start_indices = unsafe { slice::from_raw_parts(start_indices, rank) };
-    let slice_sizes = unsafe { slice::from_raw_parts(slice_sizes, rank) };
-
-    let mut src_strides = vec![1usize; rank];
-    for i in (0..rank.saturating_sub(1)).rev() {
-        src_strides[i] = src_strides[i + 1] * shape[i + 1] as usize;
-    }
-    let mut dst_strides = vec![1usize; rank];
-    for i in (0..rank.saturating_sub(1)).rev() {
-        dst_strides[i] = dst_strides[i + 1] * slice_sizes[i + 1] as usize;
-    }
-
-    for flat_dst in 0..n_dst {
-        let mut src_flat = 0usize;
-        let mut remaining = flat_dst;
-        for d in 0..rank {
-            let coord = remaining / dst_strides[d];
-            remaining %= dst_strides[d];
-            let start =
-                (start_indices[d] as usize).min(shape[d] as usize - slice_sizes[d] as usize);
-            src_flat += (start + coord) * src_strides[d];
-        }
-        dst[flat_dst] = src[src_flat.min(n_src.saturating_sub(1))];
-    }
-}
-
-pub extern "C" fn tensor_dynamic_update_slice_f64(
-    dst: *mut f64,
-    src: *const f64,
-    update: *const f64,
-    n_src: usize,
-    n_update: usize,
-    shape: *const i64,
-    rank: usize,
-    start_indices: *const i64,
-    update_shape: *const i64,
-) {
-    let src = unsafe { slice::from_raw_parts(src, n_src) };
-    let dst = unsafe { slice::from_raw_parts_mut(dst, n_src) };
-    let update = unsafe { slice::from_raw_parts(update, n_update) };
-    let shape = unsafe { slice::from_raw_parts(shape, rank) };
-    let start_indices = unsafe { slice::from_raw_parts(start_indices, rank) };
-    let update_shape = unsafe { slice::from_raw_parts(update_shape, rank) };
-
-    dst.copy_from_slice(src);
-
-    let mut src_strides = vec![1usize; rank];
-    for i in (0..rank.saturating_sub(1)).rev() {
-        src_strides[i] = src_strides[i + 1] * shape[i + 1] as usize;
-    }
-    let mut upd_strides = vec![1usize; rank];
-    for i in (0..rank.saturating_sub(1)).rev() {
-        upd_strides[i] = upd_strides[i + 1] * update_shape[i + 1] as usize;
-    }
-
-    for flat_upd in 0..n_update {
-        let mut dst_flat = 0usize;
-        let mut remaining = flat_upd;
-        for d in 0..rank {
-            let coord = remaining / upd_strides[d];
-            remaining %= upd_strides[d];
-            let start =
-                (start_indices[d] as usize).min((shape[d] - update_shape[d]).max(0) as usize);
-            dst_flat += (start + coord) * src_strides[d];
-        }
-        if dst_flat < n_src {
-            dst[dst_flat] = update[flat_upd];
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Byte-generic layout operations (for non-f64 element types)
+// Byte-generic layout operations
 // ---------------------------------------------------------------------------
 
 pub extern "C" fn tensor_broadcast_nd_generic(
@@ -1175,7 +887,7 @@ pub extern "C" fn tensor_slice_generic(
     let limits = unsafe { slice::from_raw_parts(limits, rank) };
     let mut src_s = vec![1usize; rank];
     for i in (0..rank.saturating_sub(1)).rev() { src_s[i] = src_s[i+1] * shape[i+1] as usize; }
-    let mut dst_shape: Vec<usize> = (0..rank).map(|d| (limits[d]-starts[d]) as usize).collect();
+    let dst_shape: Vec<usize> = (0..rank).map(|d| (limits[d]-starts[d]) as usize).collect();
     let mut dst_s = vec![1usize; rank];
     for i in (0..rank.saturating_sub(1)).rev() { dst_s[i] = dst_s[i+1] * dst_shape[i+1]; }
     for fd in 0..n_dst {
@@ -1196,7 +908,7 @@ pub extern "C" fn tensor_transpose_nd_generic(
     let perm = unsafe { slice::from_raw_parts(perm, rank) };
     let mut src_s = vec![1usize; rank];
     for i in (0..rank.saturating_sub(1)).rev() { src_s[i] = src_s[i+1] * src_shape[i+1] as usize; }
-    let mut dst_shape: Vec<i64> = (0..rank).map(|i| src_shape[perm[i] as usize]).collect();
+    let dst_shape: Vec<i64> = (0..rank).map(|i| src_shape[perm[i] as usize]).collect();
     let mut dst_s = vec![1usize; rank];
     for i in (0..rank.saturating_sub(1)).rev() { dst_s[i] = dst_s[i+1] * dst_shape[i+1] as usize; }
     for fd in 0..n {
@@ -1296,45 +1008,3 @@ macro_rules! iota_nd_op {
 iota_nd_op!(tensor_iota_nd_i64, i64);
 iota_nd_op!(tensor_iota_nd_f64, f64);
 
-// ---------------------------------------------------------------------------
-// N-D transpose
-// ---------------------------------------------------------------------------
-
-pub extern "C" fn tensor_transpose_nd_f64(
-    dst: *mut f64,
-    src: *const f64,
-    n: usize,
-    src_shape: *const i64,
-    perm: *const i64,
-    rank: usize,
-) {
-    let src = unsafe { slice::from_raw_parts(src, n) };
-    let dst = unsafe { slice::from_raw_parts_mut(dst, n) };
-    let src_shape = unsafe { slice::from_raw_parts(src_shape, rank) };
-    let perm = unsafe { slice::from_raw_parts(perm, rank) };
-
-    let mut src_strides = vec![1usize; rank];
-    for i in (0..rank.saturating_sub(1)).rev() {
-        src_strides[i] = src_strides[i + 1] * src_shape[i + 1] as usize;
-    }
-
-    let mut dst_shape = vec![0i64; rank];
-    for i in 0..rank {
-        dst_shape[i] = src_shape[perm[i] as usize];
-    }
-    let mut dst_strides = vec![1usize; rank];
-    for i in (0..rank.saturating_sub(1)).rev() {
-        dst_strides[i] = dst_strides[i + 1] * dst_shape[i + 1] as usize;
-    }
-
-    for flat_dst in 0..n {
-        let mut remaining = flat_dst;
-        let mut src_flat = 0usize;
-        for d in 0..rank {
-            let coord = remaining / dst_strides[d];
-            remaining %= dst_strides[d];
-            src_flat += coord * src_strides[perm[d] as usize];
-        }
-        dst[flat_dst] = src[src_flat];
-    }
-}

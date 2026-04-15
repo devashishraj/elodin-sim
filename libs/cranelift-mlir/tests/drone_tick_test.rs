@@ -1,13 +1,8 @@
+mod common;
+use common::*;
+
 use cranelift_mlir::lower::compile_module;
 use cranelift_mlir::parser::parse_module;
-
-type TickFn = unsafe extern "C" fn(*const *const u8, *mut *mut u8);
-
-fn read_f64s(buf: &[u8]) -> Vec<f64> {
-    buf.chunks_exact(8)
-        .map(|c| f64::from_le_bytes(c.try_into().unwrap()))
-        .collect()
-}
 
 fn extract_func<'a>(mlir: &'a str, name: &str) -> &'a str {
     let search = format!("func.func private @{name}(");

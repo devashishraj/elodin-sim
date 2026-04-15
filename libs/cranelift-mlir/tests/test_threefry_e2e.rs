@@ -1,14 +1,8 @@
+mod common;
+use common::*;
+
 use cranelift_mlir::lower::compile_module;
 use cranelift_mlir::parser::parse_module;
-
-fn u32_buf(vals: &[u32]) -> Vec<u8> {
-    vals.iter().flat_map(|v| v.to_le_bytes()).collect()
-}
-fn read_u32s(buf: &[u8]) -> Vec<u32> {
-    buf.chunks_exact(4)
-        .map(|c| u32::from_le_bytes(c.try_into().unwrap()))
-        .collect()
-}
 
 /// Extract the @threefry2x32 and @closed_call functions from the ball MLIR
 /// and wrap them in a main function for testing.

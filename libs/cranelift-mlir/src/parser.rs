@@ -288,7 +288,7 @@ fn parse_op(
             Instruction::IsFinite { operand: o }
         });
     }
-    if input.starts_with("stablehlo.not") {
+    if input.starts_with("stablehlo.not ") {
         return parse_unary_op(input, ctx, result_names, "stablehlo.not", |o| {
             Instruction::Not { operand: o }
         });
@@ -395,7 +395,7 @@ fn parse_op(
             Instruction::Exponential { operand: o }
         });
     }
-    if input.starts_with("stablehlo.log ") || input.starts_with("stablehlo.log_plus_one") {
+    if input.starts_with("stablehlo.log ") {
         return parse_unary_op(input, ctx, result_names, "stablehlo.log", |o| {
             Instruction::Log { operand: o }
         });

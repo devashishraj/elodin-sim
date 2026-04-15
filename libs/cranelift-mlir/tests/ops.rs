@@ -2648,18 +2648,10 @@ module @module {
     let mut coeff = vec![0.0f64; 65 * 65];
     for i in 0..65 { coeff[i * 65 + i] = 1.0; }
 
-    let v_buf: Vec<u8> = vec_in.iter().flat_map(|v| v.to_le_bytes()).collect();
-    let c_buf: Vec<u8> = coeff.iter().flat_map(|v| v.to_le_bytes()).collect();
-    let module = cranelift_mlir::parser::parse_module(mlir).expect("parse failed");
-    let compiled = cranelift_mlir::lower::compile_module(&module).expect("compile failed");
-    type TickFn = unsafe extern "C" fn(*const *const u8, *mut *mut u8);
-    let tick_fn: TickFn = unsafe { std::mem::transmute(compiled.get_main_fn()) };
-
-    let input_ptrs: Vec<*const u8> = vec![v_buf.as_ptr(), c_buf.as_ptr()];
-    let mut out_buf = vec![0u8; 8];
-    let mut output_ptrs: Vec<*mut u8> = vec![out_buf.as_mut_ptr()];
-    unsafe { tick_fn(input_ptrs.as_ptr(), output_ptrs.as_mut_ptr()) };
-    let result = f64::from_le_bytes(out_buf[..8].try_into().unwrap());
+    let v_buf = f64_buf(&vec_in);
+    let c_buf = f64_buf(&coeff);
+    let out = run_mlir_mem(mlir, &[&v_buf, &c_buf], &[8]);
+    let result = read_f64s(&out[0])[0];
 
     // After roll left: [200, 300, ..., 6500, 100]
     // After scatter zero at idx 0: [0, 300, 400, ..., 6500, 100]
@@ -3289,4 +3281,31 @@ module @module {
 "#;
     let out = run_mlir(mlir, &[&[1u8, 0u8, 1u8]], &[3]);
     assert_eq!(out[0], vec![0, 1, 0]);
+}
+
+// ---- Bitwise ops: pointer-ABI ----
+
+#[test]
+fn test_xor_mem() {
+    i64_binop_mem_test("xor", &[0xFF, 0x0F, 0x00], &[0x0F, 0x0F, 0xFF], &[0xF0, 0x00, 0xFF]);
+}
+
+#[test]
+fn test_or_mem() {
+    i64_binop_mem_test("or", &[0xF0, 0x00, 0x0F], &[0x0F, 0xFF, 0x00], &[0xFF, 0xFF, 0x0F]);
+}
+
+#[test]
+fn test_and_mem() {
+    i64_binop_mem_test("and", &[0xFF, 0x0F, 0xF0], &[0x0F, 0x0F, 0xFF], &[0x0F, 0x0F, 0xF0]);
+}
+
+#[test]
+fn test_shift_left_mem() {
+    i64_binop_mem_test("shift_left", &[1, 3, 255], &[4, 2, 1], &[16, 12, 510]);
+}
+
+#[test]
+fn test_shift_right_logical_mem() {
+    i64_binop_mem_test("shift_right_logical", &[16, 12, 255], &[4, 2, 1], &[1, 3, 127]);
 }

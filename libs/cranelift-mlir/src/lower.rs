@@ -49,8 +49,6 @@ fn max_reg_returns() -> usize {
         2
     }
 }
-const F64_BYTES: usize = 8;
-const I32_BYTES: usize = 4;
 const SLOT_ALIGN: u8 = 3;
 const MIN_RETURN_SLOT: usize = 8;
 const LU_PIVOT_EPSILON: f64 = 1e-300;
@@ -209,134 +207,8 @@ extern "C" fn libc_log1p(x: f64) -> f64 {
     x.ln_1p()
 }
 
-/// erfinv via the Cephes ndtri rational approximation.
-/// erfinv(x) = ndtri((x + 1) / 2) / sqrt(2)
 extern "C" fn erf_inv_scalar(x: f64) -> f64 {
-    if x <= -1.0 {
-        return f64::NEG_INFINITY;
-    }
-    if x >= 1.0 {
-        return f64::INFINITY;
-    }
-    ndtri((x + 1.0) * 0.5) * std::f64::consts::FRAC_1_SQRT_2
-}
-
-/// Cephes ndtri: inverse of the standard normal CDF.
-/// Ported from scipy/special/cephes/ndtri.c (BSD licensed).
-#[allow(clippy::excessive_precision)]
-fn ndtri(y0: f64) -> f64 {
-    const P0: [f64; 5] = [
-        -5.99633501014107895267E1,
-        9.80010754185999661536E1,
-        -5.66762857469070293439E1,
-        1.39312609387279679503E1,
-        -1.23916583867381258016E0,
-    ];
-    const Q0: [f64; 8] = [
-        1.95448858338141759834E0,
-        4.67627912898881538453E0,
-        8.63602421390890590575E1,
-        -2.25462687854119370527E2,
-        2.00260212380060660359E2,
-        -8.20372256168333339912E1,
-        1.59056225126211695515E1,
-        -1.18331621121330003142E0,
-    ];
-    const P1: [f64; 9] = [
-        4.05544892305962419923E0,
-        3.15251094599893866154E1,
-        5.71628192246421288162E1,
-        4.40805073893200834700E1,
-        1.46849561928858024014E1,
-        2.18663306850790267539E0,
-        -1.40256079171354495875E-1,
-        -3.50424626827848203418E-2,
-        -8.57456785154685413611E-4,
-    ];
-    const Q1: [f64; 8] = [
-        1.57799883256466749731E1,
-        4.53907635128879210584E1,
-        4.13172038254672030440E1,
-        1.50425385692907503408E1,
-        2.50464946208309415979E0,
-        -1.42182922854787788574E-1,
-        -3.80806407691578277194E-2,
-        -9.33259480895457427372E-4,
-    ];
-    const P2: [f64; 9] = [
-        3.23774891776946035970E0,
-        6.91522889068984211695E0,
-        3.93881025292474443415E0,
-        1.33303460815807542389E0,
-        2.01485389549179081538E-1,
-        1.23716634817820021358E-2,
-        3.01581553508235416007E-4,
-        2.65806974686737550832E-6,
-        6.23974539184983293730E-9,
-    ];
-    const Q2: [f64; 8] = [
-        6.02427039364742014255E0,
-        3.67983563856160859403E0,
-        1.37702099489081330271E0,
-        2.16236993594496635890E-1,
-        1.34204006088543189037E-2,
-        3.28014464682127739104E-4,
-        2.89247864745380683936E-6,
-        6.79019408009981274425E-9,
-    ];
-
-    if y0 <= 0.0 {
-        return f64::NEG_INFINITY;
-    }
-    if y0 >= 1.0 {
-        return f64::INFINITY;
-    }
-    if y0 == 0.5 {
-        return 0.0;
-    }
-
-    let s2pi: f64 = 2.50662827463100050242;
-
-    let (code, mut y) = if y0 > (1.0 - 0.13533528323661269189) {
-        (0i32, 1.0 - y0)
-    } else {
-        (1i32, y0)
-    };
-
-    if y > 0.13533528323661269189 {
-        y -= 0.5;
-        let y2 = y * y;
-        let x = y + y * (y2 * polevl(y2, &P0) / p1evl(y2, &Q0));
-        return x * s2pi;
-    }
-
-    let x = (-2.0 * y.ln()).sqrt();
-    let x0 = x - x.ln() / x;
-    let z = 1.0 / x;
-    let x1 = if x < 8.0 {
-        z * polevl(z, &P1) / p1evl(z, &Q1)
-    } else {
-        z * polevl(z, &P2) / p1evl(z, &Q2)
-    };
-    let x = x0 - x1;
-
-    if code != 0 { -x } else { x }
-}
-
-fn polevl(x: f64, coef: &[f64]) -> f64 {
-    let mut ans = coef[0];
-    for &c in &coef[1..] {
-        ans = ans * x + c;
-    }
-    ans
-}
-
-fn p1evl(x: f64, coef: &[f64]) -> f64 {
-    let mut ans = x + coef[0];
-    for &c in &coef[1..] {
-        ans = ans * x + c;
-    }
-    ans
+    crate::tensor_rt::erf_inv_impl(x)
 }
 
 // ---------------------------------------------------------------------------
@@ -459,6 +331,16 @@ define_trt! {
     not_i1,     "__trt_not_i1",     tensor_rt::tensor_not_i1,     [ptr_type(), ptr_type(), types::I64];
     sshr_i64,   "__trt_sshr_i64",   tensor_rt::tensor_sshr_i64,   [ptr_type(), ptr_type(), ptr_type(), types::I64];
     sshr_i32,   "__trt_sshr_i32",   tensor_rt::tensor_sshr_i32,   [ptr_type(), ptr_type(), ptr_type(), types::I64];
+    xor_i64,    "__trt_xor_i64",    tensor_rt::tensor_xor_i64,    [ptr_type(), ptr_type(), ptr_type(), types::I64];
+    xor_i32,    "__trt_xor_i32",    tensor_rt::tensor_xor_i32,    [ptr_type(), ptr_type(), ptr_type(), types::I64];
+    or_i64,     "__trt_or_i64",     tensor_rt::tensor_or_i64,     [ptr_type(), ptr_type(), ptr_type(), types::I64];
+    or_i32,     "__trt_or_i32",     tensor_rt::tensor_or_i32,     [ptr_type(), ptr_type(), ptr_type(), types::I64];
+    and_i64,    "__trt_and_i64",    tensor_rt::tensor_and_i64,    [ptr_type(), ptr_type(), ptr_type(), types::I64];
+    and_i32,    "__trt_and_i32",    tensor_rt::tensor_and_i32,    [ptr_type(), ptr_type(), ptr_type(), types::I64];
+    shl_i64,    "__trt_shl_i64",    tensor_rt::tensor_shl_i64,    [ptr_type(), ptr_type(), ptr_type(), types::I64];
+    shl_i32,    "__trt_shl_i32",    tensor_rt::tensor_shl_i32,    [ptr_type(), ptr_type(), ptr_type(), types::I64];
+    ushr_i64,   "__trt_ushr_i64",   tensor_rt::tensor_ushr_i64,   [ptr_type(), ptr_type(), ptr_type(), types::I64];
+    ushr_i32,   "__trt_ushr_i32",   tensor_rt::tensor_ushr_i32,   [ptr_type(), ptr_type(), ptr_type(), types::I64];
     round_f64, "__trt_round_f64", tensor_rt::tensor_round_f64, [ptr_type(), ptr_type(), types::I64];
     erf_inv_f64, "__trt_erf_inv_f64", tensor_rt::tensor_erf_inv_f64, [ptr_type(), ptr_type(), types::I64];
     // f64 binary: atan2
@@ -539,9 +421,7 @@ define_trt! {
     memcpy, "__trt_memcpy", tensor_rt::tensor_memcpy, [ptr_type(), ptr_type(), types::I64];
     // layout / shape
     transpose_f64,    "__trt_transpose_f64",    tensor_rt::tensor_transpose_f64,    [ptr_type(), ptr_type(), types::I64, types::I64];
-    transpose_nd_f64, "__trt_transpose_nd_f64", tensor_rt::tensor_transpose_nd_f64, [ptr_type(), ptr_type(), types::I64, ptr_type(), ptr_type(), types::I64];
-    broadcast_nd_f64, "__trt_bcast_nd_f64",     tensor_rt::tensor_broadcast_nd_f64, [ptr_type(), ptr_type(), types::I64, types::I64, ptr_type(), types::I64, ptr_type(), types::I64, ptr_type()];
-    slice_f64,        "__trt_slice_f64",        tensor_rt::tensor_slice_f64,        [ptr_type(), ptr_type(), types::I64, types::I64, ptr_type(), types::I64, ptr_type(), ptr_type()];
+    // (transpose_nd, broadcast_nd, slice -- replaced by generic variants below)
     concat_nd_f64,    "__trt_concat_nd_f64",    tensor_rt::tensor_concat_nd_f64,    [ptr_type(), types::I64, ptr_type(), types::I64, ptr_type(), types::I64, ptr_type(), ptr_type(), types::I64, types::I64, types::I64];
     pad_f64,          "__trt_pad_f64",          tensor_rt::tensor_pad_f64,          [ptr_type(), ptr_type(), types::I64, types::I64, types::F64, ptr_type(), ptr_type(), types::I64, ptr_type()];
     // reduce
@@ -549,18 +429,12 @@ define_trt! {
     reduce_max_f64, "__trt_reduce_max_f64", tensor_rt::tensor_reduce_max_f64, [ptr_type(), ptr_type(), types::I64, types::I64];
     reduce_min_f64, "__trt_reduce_min_f64", tensor_rt::tensor_reduce_min_f64, [ptr_type(), ptr_type(), types::I64, types::I64];
     // indexing
-    scatter_f64,   "__trt_scatter_f64",   tensor_rt::tensor_scatter_f64,   [ptr_type(), ptr_type(), types::I64, ptr_type(), ptr_type(), types::I64, types::I64];
-    gather_f64,    "__trt_gather_f64",    tensor_rt::tensor_gather_f64,    [ptr_type(), ptr_type(), types::I64, ptr_type(), types::I64, types::I64];
-    gather_nd_f64, "__trt_gather_nd_f64", tensor_rt::tensor_gather_nd_f64, [ptr_type(), ptr_type(), types::I64, ptr_type(), types::I64, types::I64, ptr_type(), types::I64, ptr_type(), ptr_type(), types::I64];
-    // byte-generic gather/scatter with elem_sz
+    // byte-generic gather/scatter/layout ops with elem_sz
     gather_generic,    "__trt_gather_generic",    tensor_rt::tensor_gather_generic,    [ptr_type(), ptr_type(), types::I64, ptr_type(), types::I64, types::I64, types::I64];
     gather_nd_generic, "__trt_gather_nd_generic", tensor_rt::tensor_gather_nd_generic, [ptr_type(), ptr_type(), types::I64, ptr_type(), types::I64, types::I64, ptr_type(), types::I64, ptr_type(), ptr_type(), types::I64, types::I64];
     scatter_generic,   "__trt_scatter_generic",   tensor_rt::tensor_scatter_generic,   [ptr_type(), ptr_type(), types::I64, ptr_type(), ptr_type(), types::I64, types::I64, types::I64];
     matmul_f64,    "__trt_matmul_f64",    tensor_rt::tensor_matmul_f64,    [ptr_type(), ptr_type(), ptr_type(), types::I64, types::I64, types::I64];
-    // dynamic slice
-    dynamic_slice_f64,        "__trt_dyn_slice_f64",     tensor_rt::tensor_dynamic_slice_f64,        [ptr_type(), ptr_type(), types::I64, types::I64, ptr_type(), types::I64, ptr_type(), ptr_type()];
-    dynamic_update_slice_f64, "__trt_dyn_upd_slice_f64", tensor_rt::tensor_dynamic_update_slice_f64, [ptr_type(), ptr_type(), ptr_type(), types::I64, types::I64, ptr_type(), types::I64, ptr_type(), ptr_type()];
-    // byte-generic layout ops (for non-f64 types)
+    // byte-generic layout ops with elem_sz
     broadcast_nd_generic,         "__trt_bcast_nd_generic",     tensor_rt::tensor_broadcast_nd_generic,         [ptr_type(), ptr_type(), types::I64, types::I64, ptr_type(), types::I64, ptr_type(), types::I64, ptr_type(), types::I64];
     slice_generic,                "__trt_slice_generic",        tensor_rt::tensor_slice_generic,                [ptr_type(), ptr_type(), types::I64, types::I64, ptr_type(), types::I64, ptr_type(), ptr_type(), types::I64];
     transpose_nd_generic,         "__trt_transpose_nd_generic", tensor_rt::tensor_transpose_nd_generic,         [ptr_type(), ptr_type(), types::I64, ptr_type(), ptr_type(), types::I64, types::I64];
@@ -724,7 +598,6 @@ fn declare_all_functions(
 // Function definition (body lowering + ABI handling)
 // ---------------------------------------------------------------------------
 
-#[allow(clippy::too_many_arguments)]
 #[allow(clippy::too_many_arguments)]
 fn define_function(
     jit_module: &mut JITModule,
@@ -923,7 +796,6 @@ fn store_i64_array(builder: &mut FunctionBuilder, vals: &[i64]) -> Value {
     ptr
 }
 
-#[allow(clippy::too_many_arguments)]
 #[allow(clippy::too_many_arguments)]
 fn lower_pointer_body(
     builder: &mut FunctionBuilder,
@@ -1540,14 +1412,9 @@ fn lower_instruction_mem(
                 let src_shape_ptr = store_i64_array(builder, &src_ty.shape);
                 let src_rank_v = builder.ins().iconst(types::I64, src_ty.rank() as i64);
                 let bd_ptr = store_i64_array(builder, broadcast_dims);
-                if is_float(rt.element_type) {
-                    let func_ref = jit_module.declare_func_in_func(trt_ids.broadcast_nd_f64, builder.func);
-                    builder.ins().call(func_ref, &[dst, get(operand)?, n_dst_v, n_src_v, dst_shape_ptr, dst_rank_v, src_shape_ptr, src_rank_v, bd_ptr]);
-                } else {
-                    let esz = builder.ins().iconst(types::I64, elem_sz as i64);
-                    let func_ref = jit_module.declare_func_in_func(trt_ids.broadcast_nd_generic, builder.func);
-                    builder.ins().call(func_ref, &[dst, get(operand)?, n_dst_v, n_src_v, dst_shape_ptr, dst_rank_v, src_shape_ptr, src_rank_v, bd_ptr, esz]);
-                }
+                let esz = builder.ins().iconst(types::I64, elem_sz as i64);
+                let func_ref = jit_module.declare_func_in_func(trt_ids.broadcast_nd_generic, builder.func);
+                builder.ins().call(func_ref, &[dst, get(operand)?, n_dst_v, n_src_v, dst_shape_ptr, dst_rank_v, src_shape_ptr, src_rank_v, bd_ptr, esz]);
             }
             Ok(vec![vec![dst]])
         }
@@ -1558,7 +1425,7 @@ fn lower_instruction_mem(
         } => {
             let src_ty = type_map.get(operand).cloned().unwrap_or(rt.clone());
             let dst = alloc_slot(builder, n * elem_sz);
-            if is_float(rt.element_type) && rt.rank() == 2 {
+            if matches!(rt.element_type, ElementType::F64) && rt.rank() == 2 {
                 let func_ref = jit_module.declare_func_in_func(trt_ids.transpose_f64, builder.func);
                 let rows_v = builder.ins().iconst(types::I64, src_ty.shape[0]);
                 let cols_v = builder.ins().iconst(types::I64, src_ty.shape[1]);
@@ -1568,14 +1435,9 @@ fn lower_instruction_mem(
                 let shape_ptr = store_i64_array(builder, &src_ty.shape);
                 let perm_ptr = store_i64_array(builder, permutation);
                 let rank_v = builder.ins().iconst(types::I64, src_ty.rank() as i64);
-                if is_float(rt.element_type) {
-                    let func_ref = jit_module.declare_func_in_func(trt_ids.transpose_nd_f64, builder.func);
-                    builder.ins().call(func_ref, &[dst, get(operand)?, n_val, shape_ptr, perm_ptr, rank_v]);
-                } else {
-                    let esz = builder.ins().iconst(types::I64, elem_sz as i64);
-                    let func_ref = jit_module.declare_func_in_func(trt_ids.transpose_nd_generic, builder.func);
-                    builder.ins().call(func_ref, &[dst, get(operand)?, n_val, shape_ptr, perm_ptr, rank_v, esz]);
-                }
+                let esz = builder.ins().iconst(types::I64, elem_sz as i64);
+                let func_ref = jit_module.declare_func_in_func(trt_ids.transpose_nd_generic, builder.func);
+                builder.ins().call(func_ref, &[dst, get(operand)?, n_val, shape_ptr, perm_ptr, rank_v, esz]);
             }
             Ok(vec![vec![dst]])
         }
@@ -1594,14 +1456,9 @@ fn lower_instruction_mem(
             let rank_v = builder.ins().iconst(types::I64, src_ty.rank() as i64);
             let starts_ptr = store_i64_array(builder, start_indices);
             let limits_ptr = store_i64_array(builder, limit_indices);
-            if is_float(rt.element_type) {
-                let func_ref = jit_module.declare_func_in_func(trt_ids.slice_f64, builder.func);
-                builder.ins().call(func_ref, &[dst, get(operand)?, n_dst_v, n_src_v, shape_ptr, rank_v, starts_ptr, limits_ptr]);
-            } else {
-                let esz = builder.ins().iconst(types::I64, elem_sz as i64);
-                let func_ref = jit_module.declare_func_in_func(trt_ids.slice_generic, builder.func);
-                builder.ins().call(func_ref, &[dst, get(operand)?, n_dst_v, n_src_v, shape_ptr, rank_v, starts_ptr, limits_ptr, esz]);
-            }
+            let esz = builder.ins().iconst(types::I64, elem_sz as i64);
+            let func_ref = jit_module.declare_func_in_func(trt_ids.slice_generic, builder.func);
+            builder.ins().call(func_ref, &[dst, get(operand)?, n_dst_v, n_src_v, shape_ptr, rank_v, starts_ptr, limits_ptr, esz]);
             Ok(vec![vec![dst]])
         }
 
@@ -1734,14 +1591,9 @@ fn lower_instruction_mem(
                 builder.ins().store(MemFlags::trusted(), idx_val, starts_ss, (i * 8) as i32);
             }
 
-            if is_float(rt.element_type) {
-                let func_ref = jit_module.declare_func_in_func(trt_ids.dynamic_slice_f64, builder.func);
-                builder.ins().call(func_ref, &[dst, get(operand)?, n_dst_v, n_src_v, shape_ptr, rank_v, starts_ss, sizes_ptr]);
-            } else {
-                let esz = builder.ins().iconst(types::I64, elem_sz as i64);
-                let func_ref = jit_module.declare_func_in_func(trt_ids.dynamic_slice_generic, builder.func);
-                builder.ins().call(func_ref, &[dst, get(operand)?, n_dst_v, n_src_v, shape_ptr, rank_v, starts_ss, sizes_ptr, esz]);
-            }
+            let esz = builder.ins().iconst(types::I64, elem_sz as i64);
+            let func_ref = jit_module.declare_func_in_func(trt_ids.dynamic_slice_generic, builder.func);
+            builder.ins().call(func_ref, &[dst, get(operand)?, n_dst_v, n_src_v, shape_ptr, rank_v, starts_ss, sizes_ptr, esz]);
             Ok(vec![vec![dst]])
         }
 
@@ -1778,14 +1630,9 @@ fn lower_instruction_mem(
                 builder.ins().store(MemFlags::trusted(), idx_val, starts_ss, (i * 8) as i32);
             }
 
-            if is_float(rt.element_type) {
-                let func_ref = jit_module.declare_func_in_func(trt_ids.dynamic_update_slice_f64, builder.func);
-                builder.ins().call(func_ref, &[dst, get(operand)?, get(update)?, n_src_v, n_upd_v, shape_ptr, rank_v, starts_ss, upd_shape_ptr]);
-            } else {
-                let esz = builder.ins().iconst(types::I64, elem_sz as i64);
-                let func_ref = jit_module.declare_func_in_func(trt_ids.dynamic_update_slice_generic, builder.func);
-                builder.ins().call(func_ref, &[dst, get(operand)?, get(update)?, n_src_v, n_upd_v, shape_ptr, rank_v, starts_ss, upd_shape_ptr, esz]);
-            }
+            let esz = builder.ins().iconst(types::I64, elem_sz as i64);
+            let func_ref = jit_module.declare_func_in_func(trt_ids.dynamic_update_slice_generic, builder.func);
+            builder.ins().call(func_ref, &[dst, get(operand)?, get(update)?, n_src_v, n_upd_v, shape_ptr, rank_v, starts_ss, upd_shape_ptr, esz]);
             Ok(vec![vec![dst]])
         }
 
@@ -1826,8 +1673,8 @@ fn lower_instruction_mem(
 
             let dst = alloc_slot(builder, n * elem_sz);
 
-            let use_generic = !matches!(src_ty.element_type, ElementType::F64);
             let n_src_v = builder.ins().iconst(types::I64, src_ty.num_elements() as i64);
+            let esz = builder.ins().iconst(types::I64, elem_sz as i64);
 
             if use_nd {
                 let n_batch = if idx_rank > 1 { n_total_idx / n_index_dims } else { 1 };
@@ -1838,14 +1685,8 @@ fn lower_instruction_mem(
                 let sim_ptr = store_i64_array(builder, &dims.start_index_map);
                 let ss_ptr = store_i64_array(builder, slice_sizes);
                 let n_dst_v = builder.ins().iconst(types::I64, n as i64);
-                if use_generic {
-                    let esz = builder.ins().iconst(types::I64, elem_sz as i64);
-                    let func_ref = jit_module.declare_func_in_func(trt_ids.gather_nd_generic, builder.func);
-                    builder.ins().call(func_ref, &[dst, get(operand)?, n_src_v, widened_idx, n_batch_v, n_idx_dims_v, src_shape_ptr, src_rank_v, sim_ptr, ss_ptr, n_dst_v, esz]);
-                } else {
-                    let func_ref = jit_module.declare_func_in_func(trt_ids.gather_nd_f64, builder.func);
-                    builder.ins().call(func_ref, &[dst, get(operand)?, n_src_v, widened_idx, n_batch_v, n_idx_dims_v, src_shape_ptr, src_rank_v, sim_ptr, ss_ptr, n_dst_v]);
-                }
+                let func_ref = jit_module.declare_func_in_func(trt_ids.gather_nd_generic, builder.func);
+                builder.ins().call(func_ref, &[dst, get(operand)?, n_src_v, widened_idx, n_batch_v, n_idx_dims_v, src_shape_ptr, src_rank_v, sim_ptr, ss_ptr, n_dst_v, esz]);
             } else {
                 let n_idx = if !dims.collapsed_slice_dims.is_empty() {
                     idx_ty.shape.first().copied().unwrap_or(1) as usize
@@ -1855,14 +1696,8 @@ fn lower_instruction_mem(
                 let row_size = if n_idx > 0 { n / n_idx } else { 1 };
                 let n_idx_v = builder.ins().iconst(types::I64, n_idx as i64);
                 let row_v = builder.ins().iconst(types::I64, row_size as i64);
-                if use_generic {
-                    let esz = builder.ins().iconst(types::I64, elem_sz as i64);
-                    let func_ref = jit_module.declare_func_in_func(trt_ids.gather_generic, builder.func);
-                    builder.ins().call(func_ref, &[dst, get(operand)?, n_src_v, widened_idx, n_idx_v, row_v, esz]);
-                } else {
-                    let func_ref = jit_module.declare_func_in_func(trt_ids.gather_f64, builder.func);
-                    builder.ins().call(func_ref, &[dst, get(operand)?, n_src_v, widened_idx, n_idx_v, row_v]);
-                }
+                let func_ref = jit_module.declare_func_in_func(trt_ids.gather_generic, builder.func);
+                builder.ins().call(func_ref, &[dst, get(operand)?, n_src_v, widened_idx, n_idx_v, row_v, esz]);
             }
             Ok(vec![vec![dst]])
         }
@@ -1903,14 +1738,9 @@ fn lower_instruction_mem(
             let n_src_v = builder.ins().iconst(types::I64, n_src as i64);
             let n_upd_v = builder.ins().iconst(types::I64, n_updates as i64);
             let inner_v = builder.ins().iconst(types::I64, inner_size as i64);
-            if matches!(src_ty.element_type, ElementType::F64) {
-                let func_ref = jit_module.declare_func_in_func(trt_ids.scatter_f64, builder.func);
-                builder.ins().call(func_ref, &[dst, get(operand)?, n_src_v, widened_idx, get(updates)?, n_upd_v, inner_v]);
-            } else {
-                let esz = builder.ins().iconst(types::I64, elem_sz as i64);
-                let func_ref = jit_module.declare_func_in_func(trt_ids.scatter_generic, builder.func);
-                builder.ins().call(func_ref, &[dst, get(operand)?, n_src_v, widened_idx, get(updates)?, n_upd_v, inner_v, esz]);
-            }
+            let esz = builder.ins().iconst(types::I64, elem_sz as i64);
+            let func_ref = jit_module.declare_func_in_func(trt_ids.scatter_generic, builder.func);
+            builder.ins().call(func_ref, &[dst, get(operand)?, n_src_v, widened_idx, get(updates)?, n_upd_v, inner_v, esz]);
             Ok(vec![vec![dst]])
         }
 
@@ -2400,6 +2230,56 @@ fn lower_instruction_mem(
             let fid = match rt.element_type {
                 ElementType::I32 | ElementType::UI32 => trt_ids.sshr_i32,
                 _ => trt_ids.sshr_i64,
+            };
+            trt_call(builder, jit_module, fid, &[dst, get(lhs)?, get(rhs)?, n_val]);
+            Ok(vec![vec![dst]])
+        }
+        Instruction::Xor { lhs, rhs } => {
+            let dst = alloc_slot(builder, n * elem_sz);
+            let n_val = builder.ins().iconst(types::I64, n as i64);
+            let fid = match rt.element_type {
+                ElementType::I32 | ElementType::UI32 => trt_ids.xor_i32,
+                _ => trt_ids.xor_i64,
+            };
+            trt_call(builder, jit_module, fid, &[dst, get(lhs)?, get(rhs)?, n_val]);
+            Ok(vec![vec![dst]])
+        }
+        Instruction::Or { lhs, rhs } => {
+            let dst = alloc_slot(builder, n * elem_sz);
+            let n_val = builder.ins().iconst(types::I64, n as i64);
+            let fid = match rt.element_type {
+                ElementType::I32 | ElementType::UI32 => trt_ids.or_i32,
+                _ => trt_ids.or_i64,
+            };
+            trt_call(builder, jit_module, fid, &[dst, get(lhs)?, get(rhs)?, n_val]);
+            Ok(vec![vec![dst]])
+        }
+        Instruction::And { lhs, rhs } => {
+            let dst = alloc_slot(builder, n * elem_sz);
+            let n_val = builder.ins().iconst(types::I64, n as i64);
+            let fid = match rt.element_type {
+                ElementType::I32 | ElementType::UI32 => trt_ids.and_i32,
+                _ => trt_ids.and_i64,
+            };
+            trt_call(builder, jit_module, fid, &[dst, get(lhs)?, get(rhs)?, n_val]);
+            Ok(vec![vec![dst]])
+        }
+        Instruction::ShiftLeft { lhs, rhs } => {
+            let dst = alloc_slot(builder, n * elem_sz);
+            let n_val = builder.ins().iconst(types::I64, n as i64);
+            let fid = match rt.element_type {
+                ElementType::I32 | ElementType::UI32 => trt_ids.shl_i32,
+                _ => trt_ids.shl_i64,
+            };
+            trt_call(builder, jit_module, fid, &[dst, get(lhs)?, get(rhs)?, n_val]);
+            Ok(vec![vec![dst]])
+        }
+        Instruction::ShiftRightLogical { lhs, rhs } => {
+            let dst = alloc_slot(builder, n * elem_sz);
+            let n_val = builder.ins().iconst(types::I64, n as i64);
+            let fid = match rt.element_type {
+                ElementType::I32 | ElementType::UI32 => trt_ids.ushr_i32,
+                _ => trt_ids.ushr_i64,
             };
             trt_call(builder, jit_module, fid, &[dst, get(lhs)?, get(rhs)?, n_val]);
             Ok(vec![vec![dst]])
@@ -3440,7 +3320,6 @@ fn lower_instruction(
 // While loop — real Cranelift loop with header/body/exit blocks
 // ---------------------------------------------------------------------------
 
-#[allow(clippy::too_many_arguments)]
 #[allow(clippy::too_many_arguments)]
 fn lower_while(
     builder: &mut FunctionBuilder,
