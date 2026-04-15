@@ -61,7 +61,9 @@ fn verify_checkpoint() {
     let handle = builder
         .spawn(verify_checkpoint_impl)
         .expect("failed to spawn thread");
-    handle.join().expect("checkpoint verification thread panicked");
+    handle
+        .join()
+        .expect("checkpoint verification thread panicked");
 }
 
 fn verify_checkpoint_impl() {
@@ -80,10 +82,7 @@ fn verify_checkpoint_impl() {
 
     let inputs = load_bins(&dir, "input_");
     let xla_outputs = load_bins(&dir, "xla_output_");
-    assert!(
-        !inputs.is_empty(),
-        "no input_*.bin files found in {dir}"
-    );
+    assert!(!inputs.is_empty(), "no input_*.bin files found in {dir}");
     assert!(
         !xla_outputs.is_empty(),
         "no xla_output_*.bin files found in {dir}"
@@ -98,13 +97,19 @@ fn verify_checkpoint_impl() {
     let meta_str = std::fs::read_to_string(&meta_path)
         .unwrap_or_else(|e| panic!("cannot read {meta_path}: {e}"));
     let meta: serde_json::Value = serde_json::from_str(&meta_str).expect("invalid JSON");
-    let num_output_slots = meta["num_output_slots"].as_u64().unwrap_or(xla_outputs.len() as u64) as usize;
+    let num_output_slots = meta["num_output_slots"]
+        .as_u64()
+        .unwrap_or(xla_outputs.len() as u64) as usize;
 
     let input_ptrs: Vec<*const u8> = inputs.iter().map(|b| b.as_ptr()).collect();
 
     let outputs_info: Vec<usize> = meta["outputs"]
         .as_array()
-        .map(|arr| arr.iter().map(|o| o["byte_size"].as_u64().unwrap_or(0) as usize).collect())
+        .map(|arr| {
+            arr.iter()
+                .map(|o| o["byte_size"].as_u64().unwrap_or(0) as usize)
+                .collect()
+        })
         .unwrap_or_default();
 
     let mut cranelift_outputs: Vec<Vec<u8>> = outputs_info
@@ -120,7 +125,10 @@ fn verify_checkpoint_impl() {
         .map(|b| b.as_mut_ptr())
         .collect();
 
-    eprintln!("executing tick function ({num_output_slots} output slots, {} output buffers)...", cranelift_outputs.len());
+    eprintln!(
+        "executing tick function ({num_output_slots} output slots, {} output buffers)...",
+        cranelift_outputs.len()
+    );
     unsafe { tick_fn(input_ptrs.as_ptr(), output_ptrs.as_mut_ptr()) };
     eprintln!("tick function OK");
 
@@ -137,7 +145,10 @@ fn verify_checkpoint_impl() {
         }
     }
     if !failures.is_empty() {
-        panic!("{} of {n_compare} outputs FAILED: {failures:?}", failures.len());
+        panic!(
+            "{} of {n_compare} outputs FAILED: {failures:?}",
+            failures.len()
+        );
     }
     eprintln!("ALL {n_compare} outputs match XLA reference");
 }
@@ -174,9 +185,11 @@ fn bisect_inner_375_impl() {
     // %arg4 = main's %arg24 (tensor<f64>) = checkpoint input_24.bin
     let quat = std::fs::read(format!("{base}/input_16.bin")).expect("input_16.bin");
     let wrench: Vec<u8> = [
-        -0.002f64, -0.002, -0.002, 0.0, 0.0, 0.0,
-        0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-    ].iter().flat_map(|v| v.to_le_bytes()).collect();
+        -0.002f64, -0.002, -0.002, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    ]
+    .iter()
+    .flat_map(|v| v.to_le_bytes())
+    .collect();
     let state1 = std::fs::read(format!("{base}/input_2.bin")).expect("input_2.bin");
     let state2 = std::fs::read(format!("{base}/input_23.bin")).expect("input_23.bin");
     let scalar = std::fs::read(format!("{base}/input_24.bin")).expect("input_24.bin");
@@ -194,7 +207,8 @@ fn bisect_inner_375_impl() {
     eprintln!("inner_375 OK");
 
     // Parse the wrench output
-    let wrench_out: Vec<f64> = out_wrench.chunks(8)
+    let wrench_out: Vec<f64> = out_wrench
+        .chunks(8)
         .map(|c| f64::from_le_bytes(c.try_into().unwrap()))
         .collect();
     let scalar_out = f64::from_le_bytes(out_scalar[..8].try_into().unwrap());
@@ -250,9 +264,11 @@ fn bisect_reduce_scalars_impl() {
 
     let quat = std::fs::read(format!("{base}/input_16.bin")).expect("input_16.bin");
     let wrench: Vec<u8> = [
-        -0.002f64, -0.002, -0.002, 0.0, 0.0, 0.0,
-        0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-    ].iter().flat_map(|v| v.to_le_bytes()).collect();
+        -0.002f64, -0.002, -0.002, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    ]
+    .iter()
+    .flat_map(|v| v.to_le_bytes())
+    .collect();
     let state1 = std::fs::read(format!("{base}/input_2.bin")).expect("input_2.bin");
     let state2 = std::fs::read(format!("{base}/input_23.bin")).expect("input_23.bin");
     let scalar = std::fs::read(format!("{base}/input_24.bin")).expect("input_24.bin");
@@ -268,9 +284,12 @@ fn bisect_reduce_scalars_impl() {
     let mut out_r144 = vec![0u8; 8];
     let mut out_r170 = vec![0u8; 8];
     let mut output_ptrs: Vec<*mut u8> = vec![
-        out_wrench.as_mut_ptr(), out_scalar.as_mut_ptr(),
-        out_r96.as_mut_ptr(), out_r117.as_mut_ptr(),
-        out_r144.as_mut_ptr(), out_r170.as_mut_ptr(),
+        out_wrench.as_mut_ptr(),
+        out_scalar.as_mut_ptr(),
+        out_r96.as_mut_ptr(),
+        out_r117.as_mut_ptr(),
+        out_r144.as_mut_ptr(),
+        out_r170.as_mut_ptr(),
     ];
 
     eprintln!("executing inner_375 bisect...");
@@ -289,7 +308,8 @@ fn bisect_reduce_scalars_impl() {
     eprintln!("  %170 (a_4 radial)    = {r170:.10e}");
     eprintln!("  Expected order of magnitude: ~1e-4 to ~1e0 for gravity");
 
-    let wrench_out: Vec<f64> = out_wrench.chunks(8)
+    let wrench_out: Vec<f64> = out_wrench
+        .chunks(8)
         .map(|c| f64::from_le_bytes(c.try_into().unwrap()))
         .collect();
     eprintln!("  wrench force_x = {:.10e}", wrench_out[3]);
@@ -313,8 +333,12 @@ fn bisect_scaling_impl() {
     let tick_fn: TickFn = unsafe { std::mem::transmute(compiled.get_main_fn()) };
 
     let quat = std::fs::read(format!("{base}/input_16.bin")).expect("quat");
-    let wrench: Vec<u8> = [-0.002f64, -0.002, -0.002, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-        .iter().flat_map(|v| v.to_le_bytes()).collect();
+    let wrench: Vec<u8> = [
+        -0.002f64, -0.002, -0.002, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    ]
+    .iter()
+    .flat_map(|v| v.to_le_bytes())
+    .collect();
     let state1 = std::fs::read(format!("{base}/input_2.bin")).expect("s1");
     let state2 = std::fs::read(format!("{base}/input_23.bin")).expect("s2");
     let scalar = std::fs::read(format!("{base}/input_24.bin")).expect("sc");
@@ -324,8 +348,15 @@ fn bisect_scaling_impl() {
 
     // 9 outputs: wrench(96) + scalar(8) + %11(8) + %23(8) + %24(8) + %25(8) + %26(8) + %46(8) + %53(520)
     let mut bufs: Vec<Vec<u8>> = vec![
-        vec![0u8; 96], vec![0u8; 8], vec![0u8; 8], vec![0u8; 8],
-        vec![0u8; 8], vec![0u8; 8], vec![0u8; 8], vec![0u8; 8], vec![0u8; 520],
+        vec![0u8; 96],
+        vec![0u8; 8],
+        vec![0u8; 8],
+        vec![0u8; 8],
+        vec![0u8; 8],
+        vec![0u8; 8],
+        vec![0u8; 8],
+        vec![0u8; 8],
+        vec![0u8; 520],
     ];
     let mut output_ptrs: Vec<*mut u8> = bufs.iter_mut().map(|b| b.as_mut_ptr()).collect();
 
@@ -333,13 +364,16 @@ fn bisect_scaling_impl() {
 
     let f = |buf: &[u8]| f64::from_le_bytes(buf[..8].try_into().unwrap());
     let v11 = f(&bufs[2]); // %11 (orbit parameter from state)
-    let r = f(&bufs[3]);    // %23 (orbital radius)
-    let dx = f(&bufs[4]);   // %24 (direction cosine x)
-    let dy = f(&bufs[5]);   // %25 (direction cosine y)
-    let dz = f(&bufs[6]);   // %26 (direction cosine z)
+    let r = f(&bufs[3]); // %23 (orbital radius)
+    let dx = f(&bufs[4]); // %24 (direction cosine x)
+    let dy = f(&bufs[5]); // %25 (direction cosine y)
+    let dz = f(&bufs[6]); // %26 (direction cosine z)
     let gm_r = f(&bufs[7]); // %46 (GM/r)
 
-    let rho: Vec<f64> = bufs[8].chunks(8).map(|c| f64::from_le_bytes(c.try_into().unwrap())).collect();
+    let rho: Vec<f64> = bufs[8]
+        .chunks(8)
+        .map(|c| f64::from_le_bytes(c.try_into().unwrap()))
+        .collect();
 
     eprintln!("=== INNER_375 SCALING PARAMETERS ===");
     eprintln!("  %11 (orbit param) = {v11:.10e}");
@@ -374,8 +408,12 @@ fn bisect_row_sums_impl() {
     let tick_fn: TickFn = unsafe { std::mem::transmute(compiled.get_main_fn()) };
 
     let quat = std::fs::read(format!("{base}/input_16.bin")).expect("quat");
-    let wrench: Vec<u8> = [-0.002f64, -0.002, -0.002, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-        .iter().flat_map(|v| v.to_le_bytes()).collect();
+    let wrench: Vec<u8> = [
+        -0.002f64, -0.002, -0.002, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    ]
+    .iter()
+    .flat_map(|v| v.to_le_bytes())
+    .collect();
     let state1 = std::fs::read(format!("{base}/input_2.bin")).expect("s1");
     let state2 = std::fs::read(format!("{base}/input_23.bin")).expect("s2");
     let scalar = std::fs::read(format!("{base}/input_24.bin")).expect("sc");
@@ -384,13 +422,21 @@ fn bisect_row_sums_impl() {
     let input_ptrs: Vec<*const u8> = inputs.iter().map(|b| b.as_ptr()).collect();
 
     // 5 outputs: wrench(96) + scalar(8) + row_sums(520) + cos(520) + sin(520)
-    let mut bufs: Vec<Vec<u8>> = vec![vec![0u8; 96], vec![0u8; 8], vec![0u8; 520], vec![0u8; 520], vec![0u8; 520]];
+    let mut bufs: Vec<Vec<u8>> = vec![
+        vec![0u8; 96],
+        vec![0u8; 8],
+        vec![0u8; 520],
+        vec![0u8; 520],
+        vec![0u8; 520],
+    ];
     let mut output_ptrs: Vec<*mut u8> = bufs.iter_mut().map(|b| b.as_mut_ptr()).collect();
 
     unsafe { tick_fn(input_ptrs.as_ptr(), output_ptrs.as_mut_ptr()) };
 
     let parse = |buf: &[u8]| -> Vec<f64> {
-        buf.chunks(8).map(|c| f64::from_le_bytes(c.try_into().unwrap())).collect()
+        buf.chunks(8)
+            .map(|c| f64::from_le_bytes(c.try_into().unwrap()))
+            .collect()
     };
     let row_sums = parse(&bufs[2]);
     let cos_vec = parse(&bufs[3]);
@@ -430,8 +476,12 @@ fn bisect_matrices_impl() {
     let tick_fn: TickFn = unsafe { std::mem::transmute(compiled.get_main_fn()) };
 
     let quat = std::fs::read(format!("{base}/input_16.bin")).expect("quat");
-    let wrench: Vec<u8> = [-0.002f64, -0.002, -0.002, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-        .iter().flat_map(|v| v.to_le_bytes()).collect();
+    let wrench: Vec<u8> = [
+        -0.002f64, -0.002, -0.002, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    ]
+    .iter()
+    .flat_map(|v| v.to_le_bytes())
+    .collect();
     let state1 = std::fs::read(format!("{base}/input_2.bin")).expect("s1");
     let state2 = std::fs::read(format!("{base}/input_23.bin")).expect("s2");
     let scalar = std::fs::read(format!("{base}/input_24.bin")).expect("sc");
@@ -440,13 +490,22 @@ fn bisect_matrices_impl() {
     let input_ptrs: Vec<*const u8> = inputs.iter().map(|b| b.as_ptr()).collect();
 
     // 6 outputs: wrench(96) + scalar(8) + legendre_r0(520) + legendre_r2(520) + coeff_r0(520) + coeff_r2(520)
-    let mut bufs: Vec<Vec<u8>> = vec![vec![0u8; 96], vec![0u8; 8], vec![0u8; 520], vec![0u8; 520], vec![0u8; 520], vec![0u8; 520]];
+    let mut bufs: Vec<Vec<u8>> = vec![
+        vec![0u8; 96],
+        vec![0u8; 8],
+        vec![0u8; 520],
+        vec![0u8; 520],
+        vec![0u8; 520],
+        vec![0u8; 520],
+    ];
     let mut output_ptrs: Vec<*mut u8> = bufs.iter_mut().map(|b| b.as_mut_ptr()).collect();
 
     unsafe { tick_fn(input_ptrs.as_ptr(), output_ptrs.as_mut_ptr()) };
 
     let parse = |buf: &[u8]| -> Vec<f64> {
-        buf.chunks(8).map(|c| f64::from_le_bytes(c.try_into().unwrap())).collect()
+        buf.chunks(8)
+            .map(|c| f64::from_le_bytes(c.try_into().unwrap()))
+            .collect()
     };
     let leg_r0 = parse(&bufs[2]);
     let leg_r2 = parse(&bufs[3]);
@@ -472,45 +531,62 @@ fn bisect_matrices_impl() {
     eprintln!("  row 2 nonzero = {coeff_r2_nz}");
 
     eprintln!("=== KEY: Is Legendre[0][0] correct? ===");
-    eprintln!("  Legendre[0][0] = {} (expected ~0.577 = 1/sqrt(3))", leg_r0[0]);
+    eprintln!(
+        "  Legendre[0][0] = {} (expected ~0.577 = 1/sqrt(3))",
+        leg_r0[0]
+    );
     eprintln!("  Legendre[2][2] = {} (expected ~4.63)", leg_r2[2]);
-    eprintln!("  Coeff[0][0] = {} (expected 0 since cos_shifted[0]=0)", coeff_r0[0]);
-    eprintln!("  Coeff[2][1] = {} (should be C_22 * cos_shifted[1] ≈ 2.44e-6)", coeff_r2[1]);
+    eprintln!(
+        "  Coeff[0][0] = {} (expected 0 since cos_shifted[0]=0)",
+        coeff_r0[0]
+    );
+    eprintln!(
+        "  Coeff[2][1] = {} (should be C_22 * cos_shifted[1] ≈ 2.44e-6)",
+        coeff_r2[1]
+    );
 }
 
 #[test]
 #[ignore = "bisection"]
 fn bisect_inner_375_nq2() {
     let builder = std::thread::Builder::new().stack_size(64 * 1024 * 1024);
-    let handle = builder.spawn(|| {
-        let base = std::env::var("CHECKPOINT_DIR")
-            .unwrap_or_else(|_| "libs/cranelift-mlir/testdata/checkpoints/cube-sat".to_string());
-        let mlir = std::fs::read_to_string(format!("{base}/inner_375_bisect5.mlir")).expect("read");
-        let module = parse_module(&mlir).expect("parse");
-        let compiled = compile_module(&module).expect("compile");
-        let tick_fn: TickFn = unsafe { std::mem::transmute(compiled.get_main_fn()) };
-        let quat = std::fs::read(format!("{base}/input_16.bin")).unwrap();
-        let wrench: Vec<u8> = [-0.002f64,-0.002,-0.002,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0]
-            .iter().flat_map(|v| v.to_le_bytes()).collect();
-        let s1 = std::fs::read(format!("{base}/input_2.bin")).unwrap();
-        let s2 = std::fs::read(format!("{base}/input_23.bin")).unwrap();
-        let sc = std::fs::read(format!("{base}/input_24.bin")).unwrap();
-        let inputs: Vec<&[u8]> = vec![&quat,&wrench,&s1,&s2,&sc];
-        let iptrs: Vec<*const u8> = inputs.iter().map(|b| b.as_ptr()).collect();
-        let mut bufs: Vec<Vec<u8>> = (0..8).map(|_| vec![0u8; 8]).collect();
-        let mut optrs: Vec<*mut u8> = bufs.iter_mut().map(|b| b.as_mut_ptr()).collect();
-        unsafe { tick_fn(iptrs.as_ptr(), optrs.as_mut_ptr()) };
-        let f = |i: usize| f64::from_le_bytes(bufs[i][..8].try_into().unwrap());
-        eprintln!("=== REDUCE SCALARS ===");
-        eprintln!("  a_1 (%96)  = {:.10e} (XLA: 3.4484e-5)", f(0));
-        eprintln!("  a_2 (%117) = {:.10e} (XLA: -1.1884e-5)", f(1));
-        eprintln!("  a_3 (%144) = {:.10e} (XLA: 1.5583e-5)", f(2));
-        eprintln!("  a_4 (%170) = {:.10e} (XLA: -8.6802e0)", f(3));
-        eprintln!("=== NQ MATRICES ===");
-        eprintln!("  nq2[0,0] = {:.10e}", f(4));
-        eprintln!("  nq2[1,1] = {:.10e}", f(5));
-        eprintln!("  nq2[2,2] = {:.10e}", f(6));
-        eprintln!("  nq1[0,0] = {:.10e}", f(7));
-    }).unwrap();
+    let handle = builder
+        .spawn(|| {
+            let base = std::env::var("CHECKPOINT_DIR").unwrap_or_else(|_| {
+                "libs/cranelift-mlir/testdata/checkpoints/cube-sat".to_string()
+            });
+            let mlir =
+                std::fs::read_to_string(format!("{base}/inner_375_bisect5.mlir")).expect("read");
+            let module = parse_module(&mlir).expect("parse");
+            let compiled = compile_module(&module).expect("compile");
+            let tick_fn: TickFn = unsafe { std::mem::transmute(compiled.get_main_fn()) };
+            let quat = std::fs::read(format!("{base}/input_16.bin")).unwrap();
+            let wrench: Vec<u8> = [
+                -0.002f64, -0.002, -0.002, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            ]
+            .iter()
+            .flat_map(|v| v.to_le_bytes())
+            .collect();
+            let s1 = std::fs::read(format!("{base}/input_2.bin")).unwrap();
+            let s2 = std::fs::read(format!("{base}/input_23.bin")).unwrap();
+            let sc = std::fs::read(format!("{base}/input_24.bin")).unwrap();
+            let inputs: Vec<&[u8]> = vec![&quat, &wrench, &s1, &s2, &sc];
+            let iptrs: Vec<*const u8> = inputs.iter().map(|b| b.as_ptr()).collect();
+            let mut bufs: Vec<Vec<u8>> = (0..8).map(|_| vec![0u8; 8]).collect();
+            let mut optrs: Vec<*mut u8> = bufs.iter_mut().map(|b| b.as_mut_ptr()).collect();
+            unsafe { tick_fn(iptrs.as_ptr(), optrs.as_mut_ptr()) };
+            let f = |i: usize| f64::from_le_bytes(bufs[i][..8].try_into().unwrap());
+            eprintln!("=== REDUCE SCALARS ===");
+            eprintln!("  a_1 (%96)  = {:.10e} (XLA: 3.4484e-5)", f(0));
+            eprintln!("  a_2 (%117) = {:.10e} (XLA: -1.1884e-5)", f(1));
+            eprintln!("  a_3 (%144) = {:.10e} (XLA: 1.5583e-5)", f(2));
+            eprintln!("  a_4 (%170) = {:.10e} (XLA: -8.6802e0)", f(3));
+            eprintln!("=== NQ MATRICES ===");
+            eprintln!("  nq2[0,0] = {:.10e}", f(4));
+            eprintln!("  nq2[1,1] = {:.10e}", f(5));
+            eprintln!("  nq2[2,2] = {:.10e}", f(6));
+            eprintln!("  nq1[0,0] = {:.10e}", f(7));
+        })
+        .unwrap();
     handle.join().unwrap();
 }

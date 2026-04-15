@@ -207,6 +207,28 @@ extern "C" fn libc_log1p(x: f64) -> f64 {
     x.ln_1p()
 }
 
+extern "C" fn libc_asin(x: f64) -> f64 {
+    x.asin()
+}
+extern "C" fn libc_atan(x: f64) -> f64 {
+    x.atan()
+}
+extern "C" fn libc_sinh(x: f64) -> f64 {
+    x.sinh()
+}
+extern "C" fn libc_cosh(x: f64) -> f64 {
+    x.cosh()
+}
+extern "C" fn libc_expm1(x: f64) -> f64 {
+    x.exp_m1()
+}
+extern "C" fn libc_cbrt(x: f64) -> f64 {
+    x.cbrt()
+}
+extern "C" fn libc_erfc(x: f64) -> f64 {
+    crate::tensor_rt::erfc_impl(x)
+}
+
 extern "C" fn erf_inv_scalar(x: f64) -> f64 {
     crate::tensor_rt::erf_inv_impl(x)
 }
@@ -230,6 +252,13 @@ struct LibmIds {
     tanh: FuncId,
     tan: FuncId,
     log1p: FuncId,
+    asin: FuncId,
+    atan: FuncId,
+    sinh: FuncId,
+    cosh: FuncId,
+    erfc: FuncId,
+    expm1: FuncId,
+    cbrt: FuncId,
 }
 
 fn declare_libm_functions(
@@ -265,6 +294,13 @@ fn declare_libm_functions(
         tanh: mk("tanh", 1, 1)?,
         tan: mk("tan", 1, 1)?,
         log1p: mk("log1p_impl", 1, 1)?,
+        asin: mk("asin_impl", 1, 1)?,
+        atan: mk("atan_impl", 1, 1)?,
+        sinh: mk("sinh_impl", 1, 1)?,
+        cosh: mk("cosh_impl", 1, 1)?,
+        erfc: mk("erfc_impl_scalar", 1, 1)?,
+        expm1: mk("expm1_impl", 1, 1)?,
+        cbrt: mk("cbrt_impl", 1, 1)?,
     })
 }
 
@@ -309,6 +345,8 @@ define_trt! {
     min_f64,  "__trt_min_f64",  tensor_rt::tensor_min_f64,  [ptr_type(), ptr_type(), ptr_type(), types::I64];
     pow_f64,  "__trt_pow_f64",  tensor_rt::tensor_pow_f64,  [ptr_type(), ptr_type(), ptr_type(), types::I64];
     rem_f64,  "__trt_rem_f64",  tensor_rt::tensor_rem_f64,  [ptr_type(), ptr_type(), ptr_type(), types::I64];
+    rem_i64,  "__trt_rem_i64",  tensor_rt::tensor_rem_i64,  [ptr_type(), ptr_type(), ptr_type(), types::I64];
+    rem_i32,  "__trt_rem_i32",  tensor_rt::tensor_rem_i32,  [ptr_type(), ptr_type(), ptr_type(), types::I64];
     // f64 unary elementwise: fn(dst, src, n)
     neg_f64,   "__trt_neg_f64",   tensor_rt::tensor_neg_f64,   [ptr_type(), ptr_type(), types::I64];
     sqrt_f64,  "__trt_sqrt_f64",  tensor_rt::tensor_sqrt_f64,  [ptr_type(), ptr_type(), types::I64];
@@ -325,6 +363,13 @@ define_trt! {
     rsqrt_f64,  "__trt_rsqrt_f64",  tensor_rt::tensor_rsqrt_f64,  [ptr_type(), ptr_type(), types::I64];
     log1p_f64,  "__trt_log1p_f64",  tensor_rt::tensor_log1p_f64,  [ptr_type(), ptr_type(), types::I64];
     ceil_f64,   "__trt_ceil_f64",   tensor_rt::tensor_ceil_f64,   [ptr_type(), ptr_type(), types::I64];
+    asin_f64,   "__trt_asin_f64",   tensor_rt::tensor_asin_f64,   [ptr_type(), ptr_type(), types::I64];
+    atan_f64,   "__trt_atan_f64",   tensor_rt::tensor_atan_f64,   [ptr_type(), ptr_type(), types::I64];
+    sinh_f64,   "__trt_sinh_f64",   tensor_rt::tensor_sinh_f64,   [ptr_type(), ptr_type(), types::I64];
+    cosh_f64,   "__trt_cosh_f64",   tensor_rt::tensor_cosh_f64,   [ptr_type(), ptr_type(), types::I64];
+    erfc_f64,   "__trt_erfc_f64",   tensor_rt::tensor_erfc_f64,   [ptr_type(), ptr_type(), types::I64];
+    expm1_f64,  "__trt_expm1_f64",  tensor_rt::tensor_expm1_f64,  [ptr_type(), ptr_type(), types::I64];
+    cbrt_f64,   "__trt_cbrt_f64",   tensor_rt::tensor_cbrt_f64,   [ptr_type(), ptr_type(), types::I64];
     is_finite_f64, "__trt_is_finite_f64", tensor_rt::tensor_is_finite_f64, [ptr_type(), ptr_type(), types::I64];
     not_i64,    "__trt_not_i64",    tensor_rt::tensor_not_i64,    [ptr_type(), ptr_type(), types::I64];
     not_i32,    "__trt_not_i32",    tensor_rt::tensor_not_i32,    [ptr_type(), ptr_type(), types::I64];
@@ -417,6 +462,8 @@ define_trt! {
     reduce_sum_i64, "__trt_reduce_sum_i64", tensor_rt::tensor_reduce_sum_i64, [ptr_type(), ptr_type(), types::I64, types::I64];
     reduce_max_i64, "__trt_reduce_max_i64", tensor_rt::tensor_reduce_max_i64, [ptr_type(), ptr_type(), types::I64, types::I64];
     reduce_min_i64, "__trt_reduce_min_i64", tensor_rt::tensor_reduce_min_i64, [ptr_type(), ptr_type(), types::I64, types::I64];
+    reduce_and_i1,  "__trt_reduce_and_i1", tensor_rt::tensor_reduce_and_i1, [ptr_type(), ptr_type(), types::I64, types::I64];
+    reduce_or_i1,   "__trt_reduce_or_i1",  tensor_rt::tensor_reduce_or_i1,  [ptr_type(), ptr_type(), types::I64, types::I64];
     // memory
     memcpy, "__trt_memcpy", tensor_rt::tensor_memcpy, [ptr_type(), ptr_type(), types::I64];
     // layout / shape
@@ -482,6 +529,13 @@ pub fn compile_module_with_config(
     jit_builder.symbol("tan", libc_tan as *const u8);
     jit_builder.symbol("erf_inv_impl", erf_inv_scalar as *const u8);
     jit_builder.symbol("log1p_impl", libc_log1p as *const u8);
+    jit_builder.symbol("asin_impl", libc_asin as *const u8);
+    jit_builder.symbol("atan_impl", libc_atan as *const u8);
+    jit_builder.symbol("sinh_impl", libc_sinh as *const u8);
+    jit_builder.symbol("cosh_impl", libc_cosh as *const u8);
+    jit_builder.symbol("erfc_impl_scalar", libc_erfc as *const u8);
+    jit_builder.symbol("expm1_impl", libc_expm1 as *const u8);
+    jit_builder.symbol("cbrt_impl", libc_cbrt as *const u8);
     jit_builder.symbol("__cranelift_svd", cranelift_svd as *const u8);
     jit_builder.symbol("__cranelift_lu", cranelift_lu as *const u8);
     jit_builder.symbol("__cranelift_trsm", cranelift_trsm as *const u8);
@@ -489,6 +543,15 @@ pub fn compile_module_with_config(
     jit_builder.symbol("__cranelift_qr", cranelift_qr as *const u8);
     jit_builder.symbol("__cranelift_orgqr", cranelift_orgqr as *const u8);
     jit_builder.symbol("__cranelift_syevd", cranelift_syevd as *const u8);
+    jit_builder.symbol("__cranelift_gesv", cranelift_gesv as *const u8);
+    jit_builder.symbol("__cranelift_potrs", cranelift_potrs as *const u8);
+    jit_builder.symbol("__cranelift_gelsd", cranelift_gelsd as *const u8);
+    jit_builder.symbol("__cranelift_geev", cranelift_geev as *const u8);
+    jit_builder.symbol("__cranelift_gesvd", cranelift_gesvd as *const u8);
+    jit_builder.symbol(
+        "__trt_sort_f64",
+        crate::tensor_rt::tensor_sort_f64 as *const u8,
+    );
     register_tensor_rt_symbols(&mut jit_builder);
 
     let mut jit_module = JITModule::new(jit_builder);
@@ -1115,7 +1178,12 @@ fn lower_instruction_mem(
                 ElementType::I64 | ElementType::UI64 => trt_ids.max_i64,
                 _ => trt_ids.max_f64,
             };
-            trt_call(builder, jit_module, fid, &[dst, get(lhs)?, get(rhs)?, n_val]);
+            trt_call(
+                builder,
+                jit_module,
+                fid,
+                &[dst, get(lhs)?, get(rhs)?, n_val],
+            );
             Ok(vec![vec![dst]])
         }
         Instruction::Minimum { lhs, rhs } => {
@@ -1126,7 +1194,12 @@ fn lower_instruction_mem(
                 ElementType::I64 | ElementType::UI64 => trt_ids.min_i64,
                 _ => trt_ids.min_f64,
             };
-            trt_call(builder, jit_module, fid, &[dst, get(lhs)?, get(rhs)?, n_val]);
+            trt_call(
+                builder,
+                jit_module,
+                fid,
+                &[dst, get(lhs)?, get(rhs)?, n_val],
+            );
             Ok(vec![vec![dst]])
         }
         Instruction::Power { lhs, rhs } => {
@@ -1140,13 +1213,18 @@ fn lower_instruction_mem(
             );
             Ok(vec![vec![dst]])
         }
-        Instruction::Remainder { lhs, rhs } if is_float(rt.element_type) => {
+        Instruction::Remainder { lhs, rhs } => {
             let dst = alloc_slot(builder, n * elem_sz);
             let n_val = builder.ins().iconst(types::I64, n as i64);
+            let fid = match rt.element_type {
+                ElementType::I64 => trt_ids.rem_i64,
+                ElementType::I32 | ElementType::UI32 => trt_ids.rem_i32,
+                _ => trt_ids.rem_f64,
+            };
             trt_call(
                 builder,
                 jit_module,
-                trt_ids.rem_f64,
+                fid,
                 &[dst, get(lhs)?, get(rhs)?, n_val],
             );
             Ok(vec![vec![dst]])
@@ -1413,8 +1491,23 @@ fn lower_instruction_mem(
                 let src_rank_v = builder.ins().iconst(types::I64, src_ty.rank() as i64);
                 let bd_ptr = store_i64_array(builder, broadcast_dims);
                 let esz = builder.ins().iconst(types::I64, elem_sz as i64);
-                let func_ref = jit_module.declare_func_in_func(trt_ids.broadcast_nd_generic, builder.func);
-                builder.ins().call(func_ref, &[dst, get(operand)?, n_dst_v, n_src_v, dst_shape_ptr, dst_rank_v, src_shape_ptr, src_rank_v, bd_ptr, esz]);
+                let func_ref =
+                    jit_module.declare_func_in_func(trt_ids.broadcast_nd_generic, builder.func);
+                builder.ins().call(
+                    func_ref,
+                    &[
+                        dst,
+                        get(operand)?,
+                        n_dst_v,
+                        n_src_v,
+                        dst_shape_ptr,
+                        dst_rank_v,
+                        src_shape_ptr,
+                        src_rank_v,
+                        bd_ptr,
+                        esz,
+                    ],
+                );
             }
             Ok(vec![vec![dst]])
         }
@@ -1429,15 +1522,21 @@ fn lower_instruction_mem(
                 let func_ref = jit_module.declare_func_in_func(trt_ids.transpose_f64, builder.func);
                 let rows_v = builder.ins().iconst(types::I64, src_ty.shape[0]);
                 let cols_v = builder.ins().iconst(types::I64, src_ty.shape[1]);
-                builder.ins().call(func_ref, &[dst, get(operand)?, rows_v, cols_v]);
+                builder
+                    .ins()
+                    .call(func_ref, &[dst, get(operand)?, rows_v, cols_v]);
             } else {
                 let n_val = builder.ins().iconst(types::I64, n as i64);
                 let shape_ptr = store_i64_array(builder, &src_ty.shape);
                 let perm_ptr = store_i64_array(builder, permutation);
                 let rank_v = builder.ins().iconst(types::I64, src_ty.rank() as i64);
                 let esz = builder.ins().iconst(types::I64, elem_sz as i64);
-                let func_ref = jit_module.declare_func_in_func(trt_ids.transpose_nd_generic, builder.func);
-                builder.ins().call(func_ref, &[dst, get(operand)?, n_val, shape_ptr, perm_ptr, rank_v, esz]);
+                let func_ref =
+                    jit_module.declare_func_in_func(trt_ids.transpose_nd_generic, builder.func);
+                builder.ins().call(
+                    func_ref,
+                    &[dst, get(operand)?, n_val, shape_ptr, perm_ptr, rank_v, esz],
+                );
             }
             Ok(vec![vec![dst]])
         }
@@ -1458,7 +1557,20 @@ fn lower_instruction_mem(
             let limits_ptr = store_i64_array(builder, limit_indices);
             let esz = builder.ins().iconst(types::I64, elem_sz as i64);
             let func_ref = jit_module.declare_func_in_func(trt_ids.slice_generic, builder.func);
-            builder.ins().call(func_ref, &[dst, get(operand)?, n_dst_v, n_src_v, shape_ptr, rank_v, starts_ptr, limits_ptr, esz]);
+            builder.ins().call(
+                func_ref,
+                &[
+                    dst,
+                    get(operand)?,
+                    n_dst_v,
+                    n_src_v,
+                    shape_ptr,
+                    rank_v,
+                    starts_ptr,
+                    limits_ptr,
+                    esz,
+                ],
+            );
             Ok(vec![vec![dst]])
         }
 
@@ -1588,12 +1700,28 @@ fn lower_instruction_mem(
                 } else {
                     raw
                 };
-                builder.ins().store(MemFlags::trusted(), idx_val, starts_ss, (i * 8) as i32);
+                builder
+                    .ins()
+                    .store(MemFlags::trusted(), idx_val, starts_ss, (i * 8) as i32);
             }
 
             let esz = builder.ins().iconst(types::I64, elem_sz as i64);
-            let func_ref = jit_module.declare_func_in_func(trt_ids.dynamic_slice_generic, builder.func);
-            builder.ins().call(func_ref, &[dst, get(operand)?, n_dst_v, n_src_v, shape_ptr, rank_v, starts_ss, sizes_ptr, esz]);
+            let func_ref =
+                jit_module.declare_func_in_func(trt_ids.dynamic_slice_generic, builder.func);
+            builder.ins().call(
+                func_ref,
+                &[
+                    dst,
+                    get(operand)?,
+                    n_dst_v,
+                    n_src_v,
+                    shape_ptr,
+                    rank_v,
+                    starts_ss,
+                    sizes_ptr,
+                    esz,
+                ],
+            );
             Ok(vec![vec![dst]])
         }
 
@@ -1627,12 +1755,29 @@ fn lower_instruction_mem(
                 } else {
                     raw
                 };
-                builder.ins().store(MemFlags::trusted(), idx_val, starts_ss, (i * 8) as i32);
+                builder
+                    .ins()
+                    .store(MemFlags::trusted(), idx_val, starts_ss, (i * 8) as i32);
             }
 
             let esz = builder.ins().iconst(types::I64, elem_sz as i64);
-            let func_ref = jit_module.declare_func_in_func(trt_ids.dynamic_update_slice_generic, builder.func);
-            builder.ins().call(func_ref, &[dst, get(operand)?, get(update)?, n_src_v, n_upd_v, shape_ptr, rank_v, starts_ss, upd_shape_ptr, esz]);
+            let func_ref =
+                jit_module.declare_func_in_func(trt_ids.dynamic_update_slice_generic, builder.func);
+            builder.ins().call(
+                func_ref,
+                &[
+                    dst,
+                    get(operand)?,
+                    get(update)?,
+                    n_src_v,
+                    n_upd_v,
+                    shape_ptr,
+                    rank_v,
+                    starts_ss,
+                    upd_shape_ptr,
+                    esz,
+                ],
+            );
             Ok(vec![vec![dst]])
         }
 
@@ -1673,11 +1818,17 @@ fn lower_instruction_mem(
 
             let dst = alloc_slot(builder, n * elem_sz);
 
-            let n_src_v = builder.ins().iconst(types::I64, src_ty.num_elements() as i64);
+            let n_src_v = builder
+                .ins()
+                .iconst(types::I64, src_ty.num_elements() as i64);
             let esz = builder.ins().iconst(types::I64, elem_sz as i64);
 
             if use_nd {
-                let n_batch = if idx_rank > 1 { n_total_idx / n_index_dims } else { 1 };
+                let n_batch = if idx_rank > 1 {
+                    n_total_idx / n_index_dims
+                } else {
+                    1
+                };
                 let n_batch_v = builder.ins().iconst(types::I64, n_batch as i64);
                 let n_idx_dims_v = builder.ins().iconst(types::I64, n_index_dims as i64);
                 let src_shape_ptr = store_i64_array(builder, &src_ty.shape);
@@ -1685,8 +1836,25 @@ fn lower_instruction_mem(
                 let sim_ptr = store_i64_array(builder, &dims.start_index_map);
                 let ss_ptr = store_i64_array(builder, slice_sizes);
                 let n_dst_v = builder.ins().iconst(types::I64, n as i64);
-                let func_ref = jit_module.declare_func_in_func(trt_ids.gather_nd_generic, builder.func);
-                builder.ins().call(func_ref, &[dst, get(operand)?, n_src_v, widened_idx, n_batch_v, n_idx_dims_v, src_shape_ptr, src_rank_v, sim_ptr, ss_ptr, n_dst_v, esz]);
+                let func_ref =
+                    jit_module.declare_func_in_func(trt_ids.gather_nd_generic, builder.func);
+                builder.ins().call(
+                    func_ref,
+                    &[
+                        dst,
+                        get(operand)?,
+                        n_src_v,
+                        widened_idx,
+                        n_batch_v,
+                        n_idx_dims_v,
+                        src_shape_ptr,
+                        src_rank_v,
+                        sim_ptr,
+                        ss_ptr,
+                        n_dst_v,
+                        esz,
+                    ],
+                );
             } else {
                 let n_idx = if !dims.collapsed_slice_dims.is_empty() {
                     idx_ty.shape.first().copied().unwrap_or(1) as usize
@@ -1696,8 +1864,20 @@ fn lower_instruction_mem(
                 let row_size = if n_idx > 0 { n / n_idx } else { 1 };
                 let n_idx_v = builder.ins().iconst(types::I64, n_idx as i64);
                 let row_v = builder.ins().iconst(types::I64, row_size as i64);
-                let func_ref = jit_module.declare_func_in_func(trt_ids.gather_generic, builder.func);
-                builder.ins().call(func_ref, &[dst, get(operand)?, n_src_v, widened_idx, n_idx_v, row_v, esz]);
+                let func_ref =
+                    jit_module.declare_func_in_func(trt_ids.gather_generic, builder.func);
+                builder.ins().call(
+                    func_ref,
+                    &[
+                        dst,
+                        get(operand)?,
+                        n_src_v,
+                        widened_idx,
+                        n_idx_v,
+                        row_v,
+                        esz,
+                    ],
+                );
             }
             Ok(vec![vec![dst]])
         }
@@ -1740,7 +1920,19 @@ fn lower_instruction_mem(
             let inner_v = builder.ins().iconst(types::I64, inner_size as i64);
             let esz = builder.ins().iconst(types::I64, elem_sz as i64);
             let func_ref = jit_module.declare_func_in_func(trt_ids.scatter_generic, builder.func);
-            builder.ins().call(func_ref, &[dst, get(operand)?, n_src_v, widened_idx, get(updates)?, n_upd_v, inner_v, esz]);
+            builder.ins().call(
+                func_ref,
+                &[
+                    dst,
+                    get(operand)?,
+                    n_src_v,
+                    widened_idx,
+                    get(updates)?,
+                    n_upd_v,
+                    inner_v,
+                    esz,
+                ],
+            );
             Ok(vec![vec![dst]])
         }
 
@@ -1787,9 +1979,8 @@ fn lower_instruction_mem(
                 (ReduceOp::Maximum, true) => trt_ids.reduce_max_i64,
                 (ReduceOp::Minimum, false) => trt_ids.reduce_min_f64,
                 (ReduceOp::Minimum, true) => trt_ids.reduce_min_i64,
-                (ReduceOp::And | ReduceOp::Or, _) => {
-                    return Err(format!("mem: reduce {:?} not yet supported", op));
-                }
+                (ReduceOp::And, _) => trt_ids.reduce_and_i1,
+                (ReduceOp::Or, _) => trt_ids.reduce_or_i1,
             };
             let n_in = src_ty.num_elements();
             let n_out = n;
@@ -2034,19 +2225,34 @@ fn lower_instruction_mem(
         Instruction::Atan2 { lhs, rhs } => {
             let dst = alloc_slot(builder, n * elem_sz);
             let n_val = builder.ins().iconst(types::I64, n as i64);
-            trt_call(builder, jit_module, trt_ids.atan2_f64, &[dst, get(lhs)?, get(rhs)?, n_val]);
+            trt_call(
+                builder,
+                jit_module,
+                trt_ids.atan2_f64,
+                &[dst, get(lhs)?, get(rhs)?, n_val],
+            );
             Ok(vec![vec![dst]])
         }
         Instruction::Acos { operand } => {
             let dst = alloc_slot(builder, n * elem_sz);
             let n_val = builder.ins().iconst(types::I64, n as i64);
-            trt_call(builder, jit_module, trt_ids.acos_f64, &[dst, get(operand)?, n_val]);
+            trt_call(
+                builder,
+                jit_module,
+                trt_ids.acos_f64,
+                &[dst, get(operand)?, n_val],
+            );
             Ok(vec![vec![dst]])
         }
         Instruction::ErfInv { operand } => {
             let dst = alloc_slot(builder, n * elem_sz);
             let n_val = builder.ins().iconst(types::I64, n as i64);
-            trt_call(builder, jit_module, trt_ids.erf_inv_f64, &[dst, get(operand)?, n_val]);
+            trt_call(
+                builder,
+                jit_module,
+                trt_ids.erf_inv_f64,
+                &[dst, get(operand)?, n_val],
+            );
             Ok(vec![vec![dst]])
         }
         Instruction::Tan { operand } => {
@@ -2075,10 +2281,18 @@ fn lower_instruction_mem(
         Instruction::RoundNearestEven { operand } => {
             let dst = alloc_slot(builder, n * elem_sz);
             let n_val = builder.ins().iconst(types::I64, n as i64);
-            trt_call(builder, jit_module, trt_ids.round_f64, &[dst, get(operand)?, n_val]);
+            trt_call(
+                builder,
+                jit_module,
+                trt_ids.round_f64,
+                &[dst, get(operand)?, n_val],
+            );
             Ok(vec![vec![dst]])
         }
-        Instruction::Reverse { operand, dimensions } => {
+        Instruction::Reverse {
+            operand,
+            dimensions,
+        } => {
             let src_ty = type_map.get(operand).cloned().unwrap_or(rt.clone());
             let dst = alloc_slot(builder, n * elem_sz);
             let n_val = builder.ins().iconst(types::I64, n as i64);
@@ -2087,13 +2301,29 @@ fn lower_instruction_mem(
             let dims_ptr = store_i64_array(builder, dimensions);
             let n_dims_val = builder.ins().iconst(types::I64, dimensions.len() as i64);
             let func_ref = jit_module.declare_func_in_func(trt_ids.reverse_f64, builder.func);
-            builder.ins().call(func_ref, &[dst, get(operand)?, n_val, shape_ptr, rank_val, dims_ptr, n_dims_val]);
+            builder.ins().call(
+                func_ref,
+                &[
+                    dst,
+                    get(operand)?,
+                    n_val,
+                    shape_ptr,
+                    rank_val,
+                    dims_ptr,
+                    n_dims_val,
+                ],
+            );
             Ok(vec![vec![dst]])
         }
         Instruction::Clamp { operand, min, max } => {
             let dst = alloc_slot(builder, n * elem_sz);
             let n_val = builder.ins().iconst(types::I64, n as i64);
-            trt_call(builder, jit_module, trt_ids.clamp_f64, &[dst, get(operand)?, get(min)?, get(max)?, n_val]);
+            trt_call(
+                builder,
+                jit_module,
+                trt_ids.clamp_f64,
+                &[dst, get(operand)?, get(min)?, get(max)?, n_val],
+            );
             Ok(vec![vec![dst]])
         }
         Instruction::Case { index, branches } => {
@@ -2191,19 +2421,159 @@ fn lower_instruction_mem(
         Instruction::Rsqrt { operand } => {
             let dst = alloc_slot(builder, n * elem_sz);
             let n_val = builder.ins().iconst(types::I64, n as i64);
-            trt_call(builder, jit_module, trt_ids.rsqrt_f64, &[dst, get(operand)?, n_val]);
+            trt_call(
+                builder,
+                jit_module,
+                trt_ids.rsqrt_f64,
+                &[dst, get(operand)?, n_val],
+            );
             Ok(vec![vec![dst]])
         }
         Instruction::Log1p { operand } => {
             let dst = alloc_slot(builder, n * elem_sz);
             let n_val = builder.ins().iconst(types::I64, n as i64);
-            trt_call(builder, jit_module, trt_ids.log1p_f64, &[dst, get(operand)?, n_val]);
+            trt_call(
+                builder,
+                jit_module,
+                trt_ids.log1p_f64,
+                &[dst, get(operand)?, n_val],
+            );
             Ok(vec![vec![dst]])
         }
         Instruction::Ceil { operand } => {
             let dst = alloc_slot(builder, n * elem_sz);
             let n_val = builder.ins().iconst(types::I64, n as i64);
-            trt_call(builder, jit_module, trt_ids.ceil_f64, &[dst, get(operand)?, n_val]);
+            trt_call(
+                builder,
+                jit_module,
+                trt_ids.ceil_f64,
+                &[dst, get(operand)?, n_val],
+            );
+            Ok(vec![vec![dst]])
+        }
+        Instruction::Asin { operand } => {
+            let dst = alloc_slot(builder, n * elem_sz);
+            let n_val = builder.ins().iconst(types::I64, n as i64);
+            trt_call(
+                builder,
+                jit_module,
+                trt_ids.asin_f64,
+                &[dst, get(operand)?, n_val],
+            );
+            Ok(vec![vec![dst]])
+        }
+        Instruction::Atan { operand } => {
+            let dst = alloc_slot(builder, n * elem_sz);
+            let n_val = builder.ins().iconst(types::I64, n as i64);
+            trt_call(
+                builder,
+                jit_module,
+                trt_ids.atan_f64,
+                &[dst, get(operand)?, n_val],
+            );
+            Ok(vec![vec![dst]])
+        }
+        Instruction::Sinh { operand } => {
+            let dst = alloc_slot(builder, n * elem_sz);
+            let n_val = builder.ins().iconst(types::I64, n as i64);
+            trt_call(
+                builder,
+                jit_module,
+                trt_ids.sinh_f64,
+                &[dst, get(operand)?, n_val],
+            );
+            Ok(vec![vec![dst]])
+        }
+        Instruction::Cosh { operand } => {
+            let dst = alloc_slot(builder, n * elem_sz);
+            let n_val = builder.ins().iconst(types::I64, n as i64);
+            trt_call(
+                builder,
+                jit_module,
+                trt_ids.cosh_f64,
+                &[dst, get(operand)?, n_val],
+            );
+            Ok(vec![vec![dst]])
+        }
+        Instruction::Erfc { operand } => {
+            let dst = alloc_slot(builder, n * elem_sz);
+            let n_val = builder.ins().iconst(types::I64, n as i64);
+            trt_call(
+                builder,
+                jit_module,
+                trt_ids.erfc_f64,
+                &[dst, get(operand)?, n_val],
+            );
+            Ok(vec![vec![dst]])
+        }
+        Instruction::Expm1 { operand } => {
+            let dst = alloc_slot(builder, n * elem_sz);
+            let n_val = builder.ins().iconst(types::I64, n as i64);
+            trt_call(
+                builder,
+                jit_module,
+                trt_ids.expm1_f64,
+                &[dst, get(operand)?, n_val],
+            );
+            Ok(vec![vec![dst]])
+        }
+        Instruction::Cbrt { operand } => {
+            let dst = alloc_slot(builder, n * elem_sz);
+            let n_val = builder.ins().iconst(types::I64, n as i64);
+            trt_call(
+                builder,
+                jit_module,
+                trt_ids.cbrt_f64,
+                &[dst, get(operand)?, n_val],
+            );
+            Ok(vec![vec![dst]])
+        }
+        Instruction::Sort {
+            inputs, dimension, ..
+        } => {
+            if inputs.len() != 1 {
+                return Err(format!(
+                    "mem sort: only single-operand sort supported, got {}",
+                    inputs.len()
+                ));
+            }
+            let src_ty = type_map.get(&inputs[0]).cloned().unwrap_or(rt.clone());
+            let dim = if *dimension < 0 {
+                src_ty.rank() as i64 + dimension
+            } else {
+                *dimension
+            } as usize;
+            let shape: Vec<usize> = src_ty.shape.iter().map(|&d| d as usize).collect();
+            let sort_len = shape[dim];
+            let mut n_outer = 1usize;
+            for i in 0..dim {
+                n_outer *= shape[i];
+            }
+            let mut n_inner = 1usize;
+            for i in (dim + 1)..src_ty.rank() {
+                n_inner *= shape[i];
+            }
+            let total = n;
+            let dst = alloc_slot(builder, total * elem_sz);
+            let total_v = builder.ins().iconst(types::I64, (total * elem_sz) as i64);
+            trt_call(
+                builder,
+                jit_module,
+                trt_ids.memcpy,
+                &[dst, get(&inputs[0])?, total_v],
+            );
+            let outer_v = builder.ins().iconst(types::I64, n_outer as i64);
+            let sort_v = builder.ins().iconst(types::I64, sort_len as i64);
+            let inner_v = builder.ins().iconst(types::I64, n_inner as i64);
+            let ascending_v = builder.ins().iconst(types::I8, 1);
+            let pt = ptr_type();
+            lapack_call(
+                builder,
+                jit_module,
+                "__trt_sort_f64",
+                &[pt, types::I64, types::I64, types::I64, types::I8],
+                &[dst, outer_v, sort_v, inner_v, ascending_v],
+            )?;
             Ok(vec![vec![dst]])
         }
         Instruction::IsFinite { operand } => {
@@ -2231,7 +2601,12 @@ fn lower_instruction_mem(
                 ElementType::I32 | ElementType::UI32 => trt_ids.sshr_i32,
                 _ => trt_ids.sshr_i64,
             };
-            trt_call(builder, jit_module, fid, &[dst, get(lhs)?, get(rhs)?, n_val]);
+            trt_call(
+                builder,
+                jit_module,
+                fid,
+                &[dst, get(lhs)?, get(rhs)?, n_val],
+            );
             Ok(vec![vec![dst]])
         }
         Instruction::Xor { lhs, rhs } => {
@@ -2241,7 +2616,12 @@ fn lower_instruction_mem(
                 ElementType::I32 | ElementType::UI32 => trt_ids.xor_i32,
                 _ => trt_ids.xor_i64,
             };
-            trt_call(builder, jit_module, fid, &[dst, get(lhs)?, get(rhs)?, n_val]);
+            trt_call(
+                builder,
+                jit_module,
+                fid,
+                &[dst, get(lhs)?, get(rhs)?, n_val],
+            );
             Ok(vec![vec![dst]])
         }
         Instruction::Or { lhs, rhs } => {
@@ -2251,7 +2631,12 @@ fn lower_instruction_mem(
                 ElementType::I32 | ElementType::UI32 => trt_ids.or_i32,
                 _ => trt_ids.or_i64,
             };
-            trt_call(builder, jit_module, fid, &[dst, get(lhs)?, get(rhs)?, n_val]);
+            trt_call(
+                builder,
+                jit_module,
+                fid,
+                &[dst, get(lhs)?, get(rhs)?, n_val],
+            );
             Ok(vec![vec![dst]])
         }
         Instruction::And { lhs, rhs } => {
@@ -2261,7 +2646,12 @@ fn lower_instruction_mem(
                 ElementType::I32 | ElementType::UI32 => trt_ids.and_i32,
                 _ => trt_ids.and_i64,
             };
-            trt_call(builder, jit_module, fid, &[dst, get(lhs)?, get(rhs)?, n_val]);
+            trt_call(
+                builder,
+                jit_module,
+                fid,
+                &[dst, get(lhs)?, get(rhs)?, n_val],
+            );
             Ok(vec![vec![dst]])
         }
         Instruction::ShiftLeft { lhs, rhs } => {
@@ -2271,7 +2661,12 @@ fn lower_instruction_mem(
                 ElementType::I32 | ElementType::UI32 => trt_ids.shl_i32,
                 _ => trt_ids.shl_i64,
             };
-            trt_call(builder, jit_module, fid, &[dst, get(lhs)?, get(rhs)?, n_val]);
+            trt_call(
+                builder,
+                jit_module,
+                fid,
+                &[dst, get(lhs)?, get(rhs)?, n_val],
+            );
             Ok(vec![vec![dst]])
         }
         Instruction::ShiftRightLogical { lhs, rhs } => {
@@ -2281,7 +2676,12 @@ fn lower_instruction_mem(
                 ElementType::I32 | ElementType::UI32 => trt_ids.ushr_i32,
                 _ => trt_ids.ushr_i64,
             };
-            trt_call(builder, jit_module, fid, &[dst, get(lhs)?, get(rhs)?, n_val]);
+            trt_call(
+                builder,
+                jit_module,
+                fid,
+                &[dst, get(lhs)?, get(rhs)?, n_val],
+            );
             Ok(vec![vec![dst]])
         }
 
@@ -3260,11 +3660,14 @@ fn lower_instruction(
 
         Instruction::Rsqrt { operand } => {
             let vals = get_vals(value_map, operand)?;
-            let out: Vec<Value> = vals.iter().map(|&v| {
-                let s = builder.ins().sqrt(v);
-                let one = builder.ins().f64const(1.0);
-                builder.ins().fdiv(one, s)
-            }).collect();
+            let out: Vec<Value> = vals
+                .iter()
+                .map(|&v| {
+                    let s = builder.ins().sqrt(v);
+                    let one = builder.ins().f64const(1.0);
+                    builder.ins().fdiv(one, s)
+                })
+                .collect();
             Ok(vec![out])
         }
 
@@ -3276,26 +3679,36 @@ fn lower_instruction(
             let vals = get_vals(value_map, operand)?;
             let one = builder.ins().iconst(types::I8, 1);
             let zero = builder.ins().iconst(types::I8, 0);
-            let out: Vec<Value> = vals.iter().map(|&v| {
-                let abs_v = builder.ins().fabs(v);
-                let inf = builder.ins().f64const(f64::INFINITY);
-                let is_fin = builder.ins().fcmp(cranelift_codegen::ir::condcodes::FloatCC::LessThan, abs_v, inf);
-                builder.ins().select(is_fin, one, zero)
-            }).collect();
+            let out: Vec<Value> = vals
+                .iter()
+                .map(|&v| {
+                    let abs_v = builder.ins().fabs(v);
+                    let inf = builder.ins().f64const(f64::INFINITY);
+                    let is_fin = builder.ins().fcmp(
+                        cranelift_codegen::ir::condcodes::FloatCC::LessThan,
+                        abs_v,
+                        inf,
+                    );
+                    builder.ins().select(is_fin, one, zero)
+                })
+                .collect();
             Ok(vec![out])
         }
 
         Instruction::Not { operand } => {
             let vals = get_vals(value_map, operand)?;
             let et = rt.element_type;
-            let out: Vec<Value> = vals.iter().map(|&v| {
-                if matches!(et, ElementType::I1) {
-                    let one = builder.ins().iconst(cranelift_codegen::ir::types::I8, 1);
-                    builder.ins().bxor(v, one)
-                } else {
-                    builder.ins().bnot(v)
-                }
-            }).collect();
+            let out: Vec<Value> = vals
+                .iter()
+                .map(|&v| {
+                    if matches!(et, ElementType::I1) {
+                        let one = builder.ins().iconst(cranelift_codegen::ir::types::I8, 1);
+                        builder.ins().bxor(v, one)
+                    } else {
+                        builder.ins().bnot(v)
+                    }
+                })
+                .collect();
             Ok(vec![out])
         }
 
@@ -3309,6 +3722,108 @@ fn lower_instruction(
             let l = get_vals(value_map, lhs)?;
             let r = get_vals(value_map, rhs)?;
             let out = elementwise_binop(builder, l, r, |b, a, c| b.ins().sshr(a, c));
+            Ok(vec![out])
+        }
+
+        Instruction::Asin { operand } => {
+            lower_libm_unary(builder, value_map, operand, libm_ids.asin, jit_module)
+        }
+        Instruction::Atan { operand } => {
+            lower_libm_unary(builder, value_map, operand, libm_ids.atan, jit_module)
+        }
+        Instruction::Sinh { operand } => {
+            lower_libm_unary(builder, value_map, operand, libm_ids.sinh, jit_module)
+        }
+        Instruction::Cosh { operand } => {
+            lower_libm_unary(builder, value_map, operand, libm_ids.cosh, jit_module)
+        }
+        Instruction::Erfc { operand } => {
+            lower_libm_unary(builder, value_map, operand, libm_ids.erfc, jit_module)
+        }
+        Instruction::Expm1 { operand } => {
+            lower_libm_unary(builder, value_map, operand, libm_ids.expm1, jit_module)
+        }
+        Instruction::Cbrt { operand } => {
+            lower_libm_unary(builder, value_map, operand, libm_ids.cbrt, jit_module)
+        }
+
+        Instruction::Sort {
+            inputs,
+            dimension,
+            comparator,
+            ..
+        } => {
+            if inputs.len() != 1 {
+                return Err(format!(
+                    "scalar sort: only single-operand sort supported, got {}",
+                    inputs.len()
+                ));
+            }
+            let vals = get_vals(value_map, &inputs[0])?.clone();
+            let src_ty = type_map.get(&inputs[0]).cloned().unwrap_or(rt.clone());
+            let rank = src_ty.rank();
+            let dim = if *dimension < 0 {
+                rank as i64 + dimension
+            } else {
+                *dimension
+            } as usize;
+            let shape: Vec<usize> = src_ty.shape.iter().map(|&d| d as usize).collect();
+            let sort_len = shape[dim];
+            let mut n_outer = 1usize;
+            for i in 0..dim {
+                n_outer *= shape[i];
+            }
+            let mut n_inner = 1usize;
+            for i in (dim + 1)..rank {
+                n_inner *= shape[i];
+            }
+
+            // Detect ascending vs descending from comparator body
+            let ascending = !comparator.iter().any(|ir| {
+                matches!(
+                    &ir.instr,
+                    Instruction::Compare {
+                        direction: CompareDirection::Gt,
+                        ..
+                    }
+                )
+            });
+
+            // Store all values into a stack buffer, sort at runtime, load back
+            let total = vals.len();
+            let ss = builder.create_sized_stack_slot(StackSlotData::new(
+                StackSlotKind::ExplicitSlot,
+                (total * 8) as u32,
+                SLOT_ALIGN,
+            ));
+            let base = builder.ins().stack_addr(ptr_type(), ss, 0);
+            for (i, &v) in vals.iter().enumerate() {
+                builder
+                    .ins()
+                    .store(MemFlags::trusted(), v, base, (i * 8) as i32);
+            }
+
+            // Call runtime sort
+            let outer_v = builder.ins().iconst(types::I64, n_outer as i64);
+            let sort_v = builder.ins().iconst(types::I64, sort_len as i64);
+            let inner_v = builder.ins().iconst(types::I64, n_inner as i64);
+            let asc_v = builder.ins().iconst(types::I8, ascending as i64);
+            let pt = ptr_type();
+            lapack_call(
+                builder,
+                jit_module,
+                "__trt_sort_f64",
+                &[pt, types::I64, types::I64, types::I64, types::I8],
+                &[base, outer_v, sort_v, inner_v, asc_v],
+            )?;
+
+            let out: Vec<Value> = (0..total)
+                .map(|i| {
+                    builder
+                        .ins()
+                        .load(types::F64, MemFlags::trusted(), base, (i * 8) as i32)
+                })
+                .collect();
             Ok(vec![out])
         }
 
@@ -4758,6 +5273,57 @@ fn lower_custom_call(
             jit_module,
         );
     }
+    if call_target.starts_with("lapack_dgesv") {
+        return lower_gesv_custom_call(
+            builder,
+            operands,
+            result_types,
+            value_map,
+            type_map,
+            jit_module,
+        );
+    }
+    if call_target.starts_with("lapack_dpotrs") {
+        return lower_potrs_custom_call(
+            builder,
+            operands,
+            result_types,
+            value_map,
+            type_map,
+            jit_module,
+            backend_config,
+        );
+    }
+    if call_target.starts_with("lapack_dgelsd") {
+        return lower_gelsd_custom_call(
+            builder,
+            operands,
+            result_types,
+            value_map,
+            type_map,
+            jit_module,
+        );
+    }
+    if call_target.starts_with("lapack_dgeev") {
+        return lower_geev_custom_call(
+            builder,
+            operands,
+            result_types,
+            value_map,
+            type_map,
+            jit_module,
+        );
+    }
+    if call_target.starts_with("lapack_dgesvd") {
+        return lower_gesvd_custom_call(
+            builder,
+            operands,
+            result_types,
+            value_map,
+            type_map,
+            jit_module,
+        );
+    }
     Err(format!("unsupported custom_call target: {call_target}"))
 }
 
@@ -5160,7 +5726,10 @@ fn load_i32_vals(
 fn require_square(name: &str, vals: &[cranelift_codegen::ir::Value]) -> Result<usize, String> {
     let n = (vals.len() as f64).sqrt() as usize;
     if n * n != vals.len() {
-        return Err(format!("{name}: non-square matrix ({} elements)", vals.len()));
+        return Err(format!(
+            "{name}: non-square matrix ({} elements)",
+            vals.len()
+        ));
     }
     Ok(n)
 }
@@ -5168,7 +5737,10 @@ fn require_square(name: &str, vals: &[cranelift_codegen::ir::Value]) -> Result<u
 fn lapack_slot(
     builder: &mut FunctionBuilder,
     total_bytes: usize,
-) -> (cranelift_codegen::ir::StackSlot, cranelift_codegen::ir::Value) {
+) -> (
+    cranelift_codegen::ir::StackSlot,
+    cranelift_codegen::ir::Value,
+) {
     let ss = builder.create_sized_stack_slot(StackSlotData::new(
         StackSlotKind::ExplicitSlot,
         total_bytes as u32,
@@ -5235,9 +5807,13 @@ fn lower_svd_custom_call(
 
     let n_val = builder.ins().iconst(types::I64, n as i64);
     let pt = ptr_type();
-    lapack_call(builder, jit_module, "__cranelift_svd",
+    lapack_call(
+        builder,
+        jit_module,
+        "__cranelift_svd",
         &[pt, types::I64, pt, pt, pt, pt],
-        &[base, n_val, u_ptr, s_ptr, vt_ptr, info_ptr])?;
+        &[base, n_val, u_ptr, s_ptr, vt_ptr, info_ptr],
+    )?;
 
     // XLA dgesdd_ffi convention: (A_overwritten, sigma, U, VT, info)
     let mut result_groups = vec![
@@ -5280,9 +5856,13 @@ fn lower_lu_custom_call(
     let m_val = builder.ins().iconst(types::I64, m as i64);
     let n_val = builder.ins().iconst(types::I64, n as i64);
     let pt = ptr_type();
-    lapack_call(builder, jit_module, "__cranelift_lu",
+    lapack_call(
+        builder,
+        jit_module,
+        "__cranelift_lu",
         &[pt, types::I64, types::I64, pt, pt, pt],
-        &[base, m_val, n_val, lu_ptr, ipiv_ptr, info_ptr])?;
+        &[base, m_val, n_val, lu_ptr, ipiv_ptr, info_ptr],
+    )?;
 
     Ok(vec![
         load_f64_vals(builder, m * n, base, lu_off),
@@ -5330,9 +5910,24 @@ fn lower_trsm_custom_call(
     let uplo_val = builder.ins().iconst(types::I8, uplo as i64);
     let diag_val = builder.ins().iconst(types::I8, diag as i64);
     let pt = ptr_type();
-    lapack_call(builder, jit_module, "__cranelift_trsm",
-        &[pt, pt, types::I64, types::I64, types::I64, types::I8, types::I8, pt],
-        &[base, b_ptr, m_val, n_imm, nrhs_val, uplo_val, diag_val, out_ptr])?;
+    lapack_call(
+        builder,
+        jit_module,
+        "__cranelift_trsm",
+        &[
+            pt,
+            pt,
+            types::I64,
+            types::I64,
+            types::I64,
+            types::I8,
+            types::I8,
+            pt,
+        ],
+        &[
+            base, b_ptr, m_val, n_imm, nrhs_val, uplo_val, diag_val, out_ptr,
+        ],
+    )?;
 
     Ok(vec![load_f64_vals(builder, m * nrhs, base, out_off)])
 }
@@ -5360,9 +5955,13 @@ fn lower_cholesky_custom_call(
 
     let n_val = builder.ins().iconst(types::I64, n as i64);
     let pt = ptr_type();
-    lapack_call(builder, jit_module, "__cranelift_cholesky",
+    lapack_call(
+        builder,
+        jit_module,
+        "__cranelift_cholesky",
         &[pt, types::I64, pt, pt],
-        &[base, n_val, l_ptr, info_ptr])?;
+        &[base, n_val, l_ptr, info_ptr],
+    )?;
 
     Ok(vec![
         load_f64_vals(builder, n * n, base, l_off),
@@ -5399,9 +5998,13 @@ fn lower_qr_custom_call(
     let m_val = builder.ins().iconst(types::I64, m as i64);
     let n_val = builder.ins().iconst(types::I64, n as i64);
     let pt = ptr_type();
-    lapack_call(builder, jit_module, "__cranelift_qr",
+    lapack_call(
+        builder,
+        jit_module,
+        "__cranelift_qr",
         &[pt, types::I64, types::I64, pt, pt],
-        &[base, m_val, n_val, qr_ptr, tau_ptr])?;
+        &[base, m_val, n_val, qr_ptr, tau_ptr],
+    )?;
 
     Ok(vec![
         load_f64_vals(builder, m * n, base, qr_off),
@@ -5440,9 +6043,13 @@ fn lower_orgqr_custom_call(
     let m_val = builder.ins().iconst(types::I64, m as i64);
     let n_val = builder.ins().iconst(types::I64, n as i64);
     let pt = ptr_type();
-    lapack_call(builder, jit_module, "__cranelift_orgqr",
+    lapack_call(
+        builder,
+        jit_module,
+        "__cranelift_orgqr",
         &[pt, pt, types::I64, types::I64, pt],
-        &[base, tau_ptr, m_val, n_val, q_ptr])?;
+        &[base, tau_ptr, m_val, n_val, q_ptr],
+    )?;
 
     Ok(vec![load_f64_vals(builder, m * n, base, q_off)])
 }
@@ -5472,13 +6079,532 @@ fn lower_syevd_custom_call(
 
     let n_val = builder.ins().iconst(types::I64, n as i64);
     let pt = ptr_type();
-    lapack_call(builder, jit_module, "__cranelift_syevd",
+    lapack_call(
+        builder,
+        jit_module,
+        "__cranelift_syevd",
         &[pt, types::I64, pt, pt, pt],
-        &[base, n_val, ev_ptr, ew_ptr, info_ptr])?;
+        &[base, n_val, ev_ptr, ew_ptr, info_ptr],
+    )?;
 
     Ok(vec![
         load_f64_vals(builder, n * n, base, ev_off),
         load_f64_vals(builder, n, base, ew_off),
         vec![load_info_i32(builder, base, info_off)],
     ])
+}
+
+// ---------------------------------------------------------------------------
+// GESV: General linear solve Ax = B
+// ---------------------------------------------------------------------------
+
+extern "C" fn cranelift_gesv(
+    a_ptr: *const f64,
+    b_ptr: *const f64,
+    n: usize,
+    nrhs: usize,
+    x_ptr: *mut f64,
+    info_ptr: *mut i32,
+) {
+    use faer::prelude::*;
+    let a = unsafe { std::slice::from_raw_parts(a_ptr, n * n) };
+    let b = unsafe { std::slice::from_raw_parts(b_ptr, n * nrhs) };
+    let a_col = row_major_to_col_major(a, n, n);
+    let b_col = row_major_to_col_major(b, n, nrhs);
+    let a_mat = faer::mat::from_column_major_slice(&a_col, n, n);
+    let b_mat = faer::mat::from_column_major_slice(&b_col, n, nrhs);
+    let lu = a_mat.partial_piv_lu();
+    let x_mat = lu.solve(&b_mat);
+    let x_out = unsafe { std::slice::from_raw_parts_mut(x_ptr, n * nrhs) };
+    for j in 0..nrhs {
+        for i in 0..n {
+            x_out[i * nrhs + j] = x_mat.read(i, j);
+        }
+    }
+    unsafe { *info_ptr = 0 };
+}
+
+fn lower_gesv_custom_call(
+    builder: &mut FunctionBuilder,
+    operands: &[ValueId],
+    result_types: &[TensorType],
+    value_map: &HashMap<ValueId, TensorVals>,
+    type_map: &HashMap<ValueId, TensorType>,
+    jit_module: &mut JITModule,
+) -> Result<Vec<TensorVals>, String> {
+    let a_vals = get_vals(value_map, &operands[0])?;
+    let b_vals = get_vals(value_map, &operands[1])?;
+    let a_ty = type_map.get(&operands[0]).ok_or("gesv: missing A type")?;
+    let n = a_ty.shape[0] as usize;
+    let nrhs = if b_vals.len() / n > 0 {
+        b_vals.len() / n
+    } else {
+        1
+    };
+    let f8 = 8;
+
+    let a_b = n * n * f8;
+    let b_b = n * nrhs * f8;
+    let x_b = n * nrhs * f8;
+    let info_b = 4;
+    let (_, base) = lapack_slot(builder, a_b + b_b + x_b + info_b);
+    store_f64_vals(builder, a_vals, base, 0);
+    store_f64_vals(builder, b_vals, base, a_b as i32);
+
+    let x_off = (a_b + b_b) as i32;
+    let info_off = (a_b + b_b + x_b) as i32;
+    let x_ptr = builder.ins().iadd_imm(base, x_off as i64);
+    let info_ptr = builder.ins().iadd_imm(base, info_off as i64);
+    let n_val = builder.ins().iconst(types::I64, n as i64);
+    let nrhs_val = builder.ins().iconst(types::I64, nrhs as i64);
+    let b_ptr_val = builder.ins().iadd_imm(base, a_b as i64);
+    let pt = ptr_type();
+    lapack_call(
+        builder,
+        jit_module,
+        "__cranelift_gesv",
+        &[pt, pt, types::I64, types::I64, pt, pt],
+        &[base, b_ptr_val, n_val, nrhs_val, x_ptr, info_ptr],
+    )?;
+
+    let mut results = Vec::new();
+    if !result_types.is_empty() {
+        results.push(load_f64_vals(builder, n * nrhs, base, x_off));
+    }
+    if result_types.len() > 1 {
+        results.push(vec![load_info_i32(builder, base, info_off)]);
+    }
+    Ok(results)
+}
+
+// ---------------------------------------------------------------------------
+// POTRS: Cholesky-based solve (L from prior dpotrf)
+// ---------------------------------------------------------------------------
+
+extern "C" fn cranelift_potrs(
+    l_ptr: *const f64,
+    b_ptr: *const f64,
+    n: usize,
+    nrhs: usize,
+    uplo: u8,
+    x_ptr: *mut f64,
+    info_ptr: *mut i32,
+) {
+    let l = unsafe { std::slice::from_raw_parts(l_ptr, n * n) };
+    let b = unsafe { std::slice::from_raw_parts(b_ptr, n * nrhs) };
+    let l_col = row_major_to_col_major(l, n, n);
+    let b_col = row_major_to_col_major(b, n, nrhs);
+    let x_out = unsafe { std::slice::from_raw_parts_mut(x_ptr, n * nrhs) };
+    // Solve L * L^T * x = b via forward then back substitution
+    let _is_lower = uplo == b'L' || uplo == 76;
+    // Forward: L * y = b
+    let mut y = b_col.clone();
+    for k in 0..nrhs {
+        for i in 0..n {
+            let mut s = y[k * n + i];
+            for j in 0..i {
+                s -= l_col[i + j * n] * y[k * n + j];
+            }
+            y[k * n + i] = s / l_col[i + i * n];
+        }
+    }
+    // Backward: L^T * x = y
+    let mut x_col = y;
+    for k in 0..nrhs {
+        for i in (0..n).rev() {
+            let mut s = x_col[k * n + i];
+            for j in (i + 1)..n {
+                s -= l_col[j + i * n] * x_col[k * n + j];
+            }
+            x_col[k * n + i] = s / l_col[i + i * n];
+        }
+    }
+    let x_row = col_major_to_row_major(&x_col, n, nrhs);
+    x_out.copy_from_slice(&x_row);
+    unsafe { *info_ptr = 0 };
+}
+
+fn lower_potrs_custom_call(
+    builder: &mut FunctionBuilder,
+    operands: &[ValueId],
+    result_types: &[TensorType],
+    value_map: &HashMap<ValueId, TensorVals>,
+    type_map: &HashMap<ValueId, TensorType>,
+    jit_module: &mut JITModule,
+    backend_config: &HashMap<String, i64>,
+) -> Result<Vec<TensorVals>, String> {
+    let l_vals = get_vals(value_map, &operands[0])?;
+    let b_vals = get_vals(value_map, &operands[1])?;
+    let l_ty = type_map.get(&operands[0]).ok_or("potrs: missing L type")?;
+    let n = l_ty.shape[0] as usize;
+    let nrhs = if b_vals.len() / n > 0 {
+        b_vals.len() / n
+    } else {
+        1
+    };
+    let uplo = backend_config.get("uplo").copied().unwrap_or(76) as u8;
+    let f8 = 8;
+
+    let l_b = n * n * f8;
+    let b_b = n * nrhs * f8;
+    let x_b = n * nrhs * f8;
+    let info_b = 4;
+    let (_, base) = lapack_slot(builder, l_b + b_b + x_b + info_b);
+    store_f64_vals(builder, l_vals, base, 0);
+    store_f64_vals(builder, b_vals, base, l_b as i32);
+
+    let x_off = (l_b + b_b) as i32;
+    let info_off = (l_b + b_b + x_b) as i32;
+    let x_ptr = builder.ins().iadd_imm(base, x_off as i64);
+    let info_ptr = builder.ins().iadd_imm(base, info_off as i64);
+    let b_ptr_val = builder.ins().iadd_imm(base, l_b as i64);
+    let n_val = builder.ins().iconst(types::I64, n as i64);
+    let nrhs_val = builder.ins().iconst(types::I64, nrhs as i64);
+    let uplo_val = builder.ins().iconst(types::I8, uplo as i64);
+    let pt = ptr_type();
+    lapack_call(
+        builder,
+        jit_module,
+        "__cranelift_potrs",
+        &[pt, pt, types::I64, types::I64, types::I8, pt, pt],
+        &[base, b_ptr_val, n_val, nrhs_val, uplo_val, x_ptr, info_ptr],
+    )?;
+
+    let mut results = Vec::new();
+    if !result_types.is_empty() {
+        results.push(load_f64_vals(builder, n * nrhs, base, x_off));
+    }
+    if result_types.len() > 1 {
+        results.push(vec![load_info_i32(builder, base, info_off)]);
+    }
+    Ok(results)
+}
+
+// ---------------------------------------------------------------------------
+// GELSD: Least-squares solve via SVD
+// ---------------------------------------------------------------------------
+
+extern "C" fn cranelift_gelsd(
+    a_ptr: *const f64,
+    b_ptr: *const f64,
+    m: usize,
+    n: usize,
+    nrhs: usize,
+    x_ptr: *mut f64,
+    s_ptr: *mut f64,
+    rank_ptr: *mut i32,
+    info_ptr: *mut i32,
+) {
+    use faer::prelude::*;
+    let a = unsafe { std::slice::from_raw_parts(a_ptr, m * n) };
+    let b = unsafe { std::slice::from_raw_parts(b_ptr, m * nrhs) };
+    let a_col = row_major_to_col_major(a, m, n);
+    let b_col = row_major_to_col_major(b, m, nrhs);
+    let a_mat = faer::mat::from_column_major_slice(&a_col, m, n);
+    let b_mat = faer::mat::from_column_major_slice(&b_col, m, nrhs);
+
+    let svd = a_mat.thin_svd();
+    let min_mn = m.min(n);
+    let s_diag = svd.s_diagonal();
+    let s_out = unsafe { std::slice::from_raw_parts_mut(s_ptr, min_mn) };
+    for i in 0..min_mn {
+        s_out[i] = s_diag.read(i);
+    }
+
+    let threshold =
+        f64::EPSILON * (m.max(n) as f64) * s_out.iter().cloned().fold(0.0_f64, f64::max);
+    let mut effective_rank = 0i32;
+    let x_out = unsafe { std::slice::from_raw_parts_mut(x_ptr, n * nrhs) };
+    for j in 0..nrhs {
+        for i in 0..n {
+            let mut val = 0.0;
+            for k in 0..min_mn {
+                let sv = s_diag.read(k);
+                if sv > threshold {
+                    let mut ut_b = 0.0;
+                    for r in 0..m {
+                        ut_b += svd.u().read(r, k) * b_mat.read(r, j);
+                    }
+                    val += svd.v().read(i, k) * ut_b / sv;
+                }
+            }
+            x_out[i * nrhs + j] = val;
+        }
+    }
+    for k in 0..min_mn {
+        if s_out[k] > threshold {
+            effective_rank += 1;
+        }
+    }
+    unsafe { *rank_ptr = effective_rank };
+    unsafe { *info_ptr = 0 };
+}
+
+fn lower_gelsd_custom_call(
+    builder: &mut FunctionBuilder,
+    operands: &[ValueId],
+    result_types: &[TensorType],
+    value_map: &HashMap<ValueId, TensorVals>,
+    type_map: &HashMap<ValueId, TensorType>,
+    jit_module: &mut JITModule,
+) -> Result<Vec<TensorVals>, String> {
+    let a_vals = get_vals(value_map, &operands[0])?;
+    let b_vals = get_vals(value_map, &operands[1])?;
+    let a_ty = type_map.get(&operands[0]).ok_or("gelsd: missing A type")?;
+    let m = a_ty.shape[0] as usize;
+    let n = a_ty.shape[1] as usize;
+    let nrhs = if b_vals.len() / m > 0 {
+        b_vals.len() / m
+    } else {
+        1
+    };
+    let min_mn = m.min(n);
+    let f8 = 8;
+
+    let a_b = m * n * f8;
+    let b_b = m * nrhs * f8;
+    let x_b = n * nrhs * f8;
+    let s_b = min_mn * f8;
+    let rank_b = 4;
+    let info_b = 4;
+    let total = a_b + b_b + x_b + s_b + rank_b + info_b;
+    let (_, base) = lapack_slot(builder, total);
+    store_f64_vals(builder, a_vals, base, 0);
+    store_f64_vals(builder, b_vals, base, a_b as i32);
+
+    let x_off = (a_b + b_b) as i32;
+    let s_off = (a_b + b_b + x_b) as i32;
+    let rank_off = (a_b + b_b + x_b + s_b) as i32;
+    let info_off = (a_b + b_b + x_b + s_b + rank_b) as i32;
+
+    let b_ptr_val = builder.ins().iadd_imm(base, a_b as i64);
+    let x_ptr = builder.ins().iadd_imm(base, x_off as i64);
+    let s_ptr = builder.ins().iadd_imm(base, s_off as i64);
+    let rank_ptr = builder.ins().iadd_imm(base, rank_off as i64);
+    let info_ptr = builder.ins().iadd_imm(base, info_off as i64);
+    let m_val = builder.ins().iconst(types::I64, m as i64);
+    let n_val = builder.ins().iconst(types::I64, n as i64);
+    let nrhs_val = builder.ins().iconst(types::I64, nrhs as i64);
+    let pt = ptr_type();
+    lapack_call(
+        builder,
+        jit_module,
+        "__cranelift_gelsd",
+        &[pt, pt, types::I64, types::I64, types::I64, pt, pt, pt, pt],
+        &[
+            base, b_ptr_val, m_val, n_val, nrhs_val, x_ptr, s_ptr, rank_ptr, info_ptr,
+        ],
+    )?;
+
+    let mut results = Vec::new();
+    results.push(load_f64_vals(builder, n * nrhs, base, x_off));
+    if result_types.len() > 1 {
+        results.push(load_f64_vals(builder, min_mn, base, s_off));
+    }
+    if result_types.len() > 2 {
+        results.push(vec![load_info_i32(builder, base, rank_off)]);
+    }
+    if result_types.len() > 3 {
+        results.push(vec![load_info_i32(builder, base, info_off)]);
+    }
+    Ok(results)
+}
+
+// ---------------------------------------------------------------------------
+// GEEV: Non-symmetric eigendecomposition
+// ---------------------------------------------------------------------------
+
+extern "C" fn cranelift_geev(
+    a_ptr: *const f64,
+    n: usize,
+    wr_ptr: *mut f64,
+    wi_ptr: *mut f64,
+    vr_ptr: *mut f64,
+    info_ptr: *mut i32,
+) {
+    use faer::complex_native::c64;
+    use faer::prelude::*;
+    let a = unsafe { std::slice::from_raw_parts(a_ptr, n * n) };
+    let a_col = row_major_to_col_major(a, n, n);
+    let a_mat = faer::mat::from_column_major_slice(&a_col, n, n);
+
+    let evd = a_mat.eigendecomposition::<c64>();
+    let eigenvalues = evd.s();
+    let eigenvectors = evd.u();
+
+    let wr = unsafe { std::slice::from_raw_parts_mut(wr_ptr, n) };
+    let wi = unsafe { std::slice::from_raw_parts_mut(wi_ptr, n) };
+    let vr = unsafe { std::slice::from_raw_parts_mut(vr_ptr, n * n) };
+
+    for i in 0..n {
+        let ev = eigenvalues.column_vector().read(i);
+        wr[i] = ev.re;
+        wi[i] = ev.im;
+    }
+
+    let mut i = 0;
+    while i < n {
+        if wi[i].abs() < 1e-15 {
+            for j in 0..n {
+                vr[j * n + i] = eigenvectors.read(j, i).re;
+            }
+            i += 1;
+        } else {
+            for j in 0..n {
+                vr[j * n + i] = eigenvectors.read(j, i).re;
+                vr[j * n + i + 1] = eigenvectors.read(j, i).im;
+            }
+            i += 2;
+        }
+    }
+    unsafe { *info_ptr = 0 };
+}
+
+fn lower_geev_custom_call(
+    builder: &mut FunctionBuilder,
+    operands: &[ValueId],
+    result_types: &[TensorType],
+    value_map: &HashMap<ValueId, TensorVals>,
+    _type_map: &HashMap<ValueId, TensorType>,
+    jit_module: &mut JITModule,
+) -> Result<Vec<TensorVals>, String> {
+    let a_vals = get_vals(value_map, &operands[0])?;
+    let n = require_square("GEEV", a_vals)?;
+    let f8 = 8;
+
+    let a_b = n * n * f8;
+    let wr_b = n * f8;
+    let wi_b = n * f8;
+    let vr_b = n * n * f8;
+    let info_b = 4;
+    let (_, base) = lapack_slot(builder, a_b + wr_b + wi_b + vr_b + info_b);
+    store_f64_vals(builder, a_vals, base, 0);
+
+    let wr_off = a_b as i32;
+    let wi_off = (a_b + wr_b) as i32;
+    let vr_off = (a_b + wr_b + wi_b) as i32;
+    let info_off = (a_b + wr_b + wi_b + vr_b) as i32;
+
+    let wr_ptr = builder.ins().iadd_imm(base, wr_off as i64);
+    let wi_ptr = builder.ins().iadd_imm(base, wi_off as i64);
+    let vr_ptr = builder.ins().iadd_imm(base, vr_off as i64);
+    let info_ptr = builder.ins().iadd_imm(base, info_off as i64);
+    let n_val = builder.ins().iconst(types::I64, n as i64);
+    let pt = ptr_type();
+    lapack_call(
+        builder,
+        jit_module,
+        "__cranelift_geev",
+        &[pt, types::I64, pt, pt, pt, pt],
+        &[base, n_val, wr_ptr, wi_ptr, vr_ptr, info_ptr],
+    )?;
+
+    let mut results = Vec::new();
+    results.push(load_f64_vals(builder, n, base, wr_off));
+    if result_types.len() > 1 {
+        results.push(load_f64_vals(builder, n, base, wi_off));
+    }
+    if result_types.len() > 2 {
+        results.push(load_f64_vals(builder, n * n, base, vr_off));
+    }
+    if result_types.len() > 3 {
+        results.push(vec![load_info_i32(builder, base, info_off)]);
+    }
+    Ok(results)
+}
+
+// ---------------------------------------------------------------------------
+// GESVD: Full SVD (m x m U, n x n V)
+// ---------------------------------------------------------------------------
+
+extern "C" fn cranelift_gesvd(
+    a_ptr: *const f64,
+    m: usize,
+    n: usize,
+    u_ptr: *mut f64,
+    s_ptr: *mut f64,
+    vt_ptr: *mut f64,
+    info_ptr: *mut i32,
+) {
+    use faer::prelude::*;
+    let a = unsafe { std::slice::from_raw_parts(a_ptr, m * n) };
+    let a_col = row_major_to_col_major(a, m, n);
+    let a_mat = faer::mat::from_column_major_slice(&a_col, m, n);
+    let svd = a_mat.svd();
+
+    let min_mn = m.min(n);
+    let s_diag = svd.s_diagonal();
+    let s_out = unsafe { std::slice::from_raw_parts_mut(s_ptr, min_mn) };
+    for i in 0..min_mn {
+        s_out[i] = s_diag.read(i);
+    }
+
+    let u_out = unsafe { std::slice::from_raw_parts_mut(u_ptr, m * m) };
+    for i in 0..m {
+        for j in 0..m {
+            u_out[i * m + j] = svd.u().read(i, j);
+        }
+    }
+
+    let vt_out = unsafe { std::slice::from_raw_parts_mut(vt_ptr, n * n) };
+    for i in 0..n {
+        for j in 0..n {
+            vt_out[i * n + j] = svd.v().read(j, i);
+        }
+    }
+    unsafe { *info_ptr = 0 };
+}
+
+fn lower_gesvd_custom_call(
+    builder: &mut FunctionBuilder,
+    operands: &[ValueId],
+    result_types: &[TensorType],
+    value_map: &HashMap<ValueId, TensorVals>,
+    type_map: &HashMap<ValueId, TensorType>,
+    jit_module: &mut JITModule,
+) -> Result<Vec<TensorVals>, String> {
+    let a_vals = get_vals(value_map, &operands[0])?;
+    let a_ty = type_map.get(&operands[0]).ok_or("gesvd: missing A type")?;
+    let m = a_ty.shape[0] as usize;
+    let n = a_ty.shape[1] as usize;
+    let min_mn = m.min(n);
+    let f8 = 8;
+
+    let a_b = m * n * f8;
+    let u_b = m * m * f8;
+    let s_b = min_mn * f8;
+    let vt_b = n * n * f8;
+    let info_b = 4;
+    let total = a_b + u_b + s_b + vt_b + info_b;
+    let (_, base) = lapack_slot(builder, total);
+    store_f64_vals(builder, a_vals, base, 0);
+
+    let u_off = a_b as i32;
+    let s_off = (a_b + u_b) as i32;
+    let vt_off = (a_b + u_b + s_b) as i32;
+    let info_off = (a_b + u_b + s_b + vt_b) as i32;
+
+    let u_ptr = builder.ins().iadd_imm(base, u_off as i64);
+    let s_ptr = builder.ins().iadd_imm(base, s_off as i64);
+    let vt_ptr = builder.ins().iadd_imm(base, vt_off as i64);
+    let info_ptr = builder.ins().iadd_imm(base, info_off as i64);
+    let m_val = builder.ins().iconst(types::I64, m as i64);
+    let n_val = builder.ins().iconst(types::I64, n as i64);
+    let pt = ptr_type();
+    lapack_call(
+        builder,
+        jit_module,
+        "__cranelift_gesvd",
+        &[pt, types::I64, types::I64, pt, pt, pt, pt],
+        &[base, m_val, n_val, u_ptr, s_ptr, vt_ptr, info_ptr],
+    )?;
+
+    // XLA result ordering: (A_overwritten, sigma, U, VT, info)
+    let mut results = Vec::new();
+    results.push(load_f64_vals(builder, m * n, base, 0)); // A overwritten
+    results.push(load_f64_vals(builder, min_mn, base, s_off));
+    results.push(load_f64_vals(builder, m * m, base, u_off));
+    results.push(load_f64_vals(builder, n * n, base, vt_off));
+    results.push(vec![load_info_i32(builder, base, info_off)]);
+    Ok(results)
 }

@@ -349,6 +349,9 @@ fn parse_op(
     if input.starts_with("stablehlo.dynamic_slice") {
         return parse_dynamic_slice_op(input, ctx, result_names);
     }
+    if input.starts_with("\"stablehlo.sort\"") || input.starts_with("stablehlo.sort") {
+        return parse_sort_op(input, ctx, result_names);
+    }
     if input.starts_with("stablehlo.while") {
         return parse_while_op(input, ctx, result_names);
     }
@@ -456,6 +459,41 @@ fn parse_op(
     if input.starts_with("chlo.acos") {
         return parse_unary_op(input, ctx, result_names, "chlo.acos", |o| {
             Instruction::Acos { operand: o }
+        });
+    }
+    if input.starts_with("chlo.asin") {
+        return parse_unary_op(input, ctx, result_names, "chlo.asin", |o| {
+            Instruction::Asin { operand: o }
+        });
+    }
+    if input.starts_with("chlo.atan ") {
+        return parse_unary_op(input, ctx, result_names, "chlo.atan", |o| {
+            Instruction::Atan { operand: o }
+        });
+    }
+    if input.starts_with("chlo.sinh") {
+        return parse_unary_op(input, ctx, result_names, "chlo.sinh", |o| {
+            Instruction::Sinh { operand: o }
+        });
+    }
+    if input.starts_with("chlo.cosh") {
+        return parse_unary_op(input, ctx, result_names, "chlo.cosh", |o| {
+            Instruction::Cosh { operand: o }
+        });
+    }
+    if input.starts_with("chlo.erfc") {
+        return parse_unary_op(input, ctx, result_names, "chlo.erfc", |o| {
+            Instruction::Erfc { operand: o }
+        });
+    }
+    if input.starts_with("stablehlo.expm1") {
+        return parse_unary_op(input, ctx, result_names, "stablehlo.expm1", |o| {
+            Instruction::Expm1 { operand: o }
+        });
+    }
+    if input.starts_with("stablehlo.cbrt") {
+        return parse_unary_op(input, ctx, result_names, "stablehlo.cbrt", |o| {
+            Instruction::Cbrt { operand: o }
         });
     }
     if input.starts_with("call @") || input.starts_with("func.call @") {
@@ -1622,6 +1660,157 @@ fn parse_while_op(
             loop_body,
             init_values,
             iter_arg_ids: body_iter_ids,
+        },
+    }))
+}
+
+fn parse_sort_op(
+    input: &mut Stream<'_>,
+    ctx: &mut ValueCtx,
+    result_names: &[String],
+) -> PResult<Option<InstrResult>> {
+    if input.starts_with('"') {
+        let _ = '"'.parse_next(input)?;
+        let _ = "stablehlo.sort".parse_next(input)?;
+        let _ = '"'.parse_next(input)?;
+    } else {
+        let _ = "stablehlo.sort".parse_next(input)?;
+    }
+    ws(input)?;
+    let _ = '('.parse_next(input)?;
+    ws(input)?;
+    let mut operands = Vec::new();
+    loop {
+        ws(input)?;
+        if input.starts_with(')') {
+            break;
+        }
+        let v = parse_value_ref(input, ctx)?;
+        operands.push(v);
+        ws(input)?;
+        if input.starts_with(',') {
+            let _ = ','.parse_next(input)?;
+        } else {
+            break;
+        }
+    }
+    let _ = ')'.parse_next(input)?;
+    ws(input)?;
+
+    let mut dimension: i64 = 0;
+    let mut is_stable = false;
+
+    // Parse optional <{dimension = N, is_stable = true}>
+    if input.starts_with('<') {
+        let _ = '<'.parse_next(input)?;
+        let attrs: &str = take_till(0.., '>').parse_next(input)?;
+        let _ = '>'.parse_next(input)?;
+        ws(input)?;
+        for segment in attrs.split(',') {
+            let seg = segment.trim().trim_start_matches('{').trim_end_matches('}');
+            if let Some(rest) = seg.strip_prefix("dimension") {
+                if let Some(val_str) = rest.split('=').nth(1) {
+                    let val_str = val_str.trim().split(':').next().unwrap_or("0").trim();
+                    dimension = val_str.parse::<i64>().unwrap_or(0);
+                }
+            }
+            if seg.contains("is_stable") && seg.contains("true") {
+                is_stable = true;
+            }
+        }
+    }
+
+    // Also handle {dimension = N, is_stable = true} inline attrs
+    if input.starts_with('{') {
+        let _ = '{'.parse_next(input)?;
+        let attrs: &str = take_till(0.., '}').parse_next(input)?;
+        let _ = '}'.parse_next(input)?;
+        ws(input)?;
+        for segment in attrs.split(',') {
+            let seg = segment.trim();
+            if let Some(rest) = seg.strip_prefix("dimension") {
+                if let Some(val_str) = rest.split('=').nth(1) {
+                    let val_str = val_str.trim().split(':').next().unwrap_or("0").trim();
+                    dimension = val_str.parse::<i64>().unwrap_or(0);
+                }
+            }
+            if seg.contains("is_stable") && seg.contains("true") {
+                is_stable = true;
+            }
+        }
+    }
+
+    // Skip to comparator region opening '('
+    while !input.is_empty() && !input.starts_with('(') {
+        let _ = any.parse_next(input)?;
+    }
+    let _ = '('.parse_next(input)?;
+    ws(input)?;
+    let _ = '{'.parse_next(input)?;
+    ws(input)?;
+
+    // Parse ^bb0 header with typed block arguments
+    let mut comp_ctx = ctx.child();
+    let mut comp_params = Vec::new();
+    if input.starts_with('^') {
+        let _ = take_till(0.., '(').parse_next(input)?;
+        let _ = '('.parse_next(input)?;
+        loop {
+            ws(input)?;
+            if input.starts_with(')') {
+                break;
+            }
+            let name = value_name(input)?;
+            ws(input)?;
+            let _ = ':'.parse_next(input)?;
+            ws(input)?;
+            let _ty_str: &str = take_till(0.., |c: char| c == ',' || c == ')').parse_next(input)?;
+            let pid = comp_ctx.get_or_create(&name);
+            comp_params.push(pid);
+            ws(input)?;
+            if input.starts_with(',') {
+                let _ = ','.parse_next(input)?;
+            }
+        }
+        let _ = ')'.parse_next(input)?;
+        ws(input)?;
+        if input.starts_with(':') {
+            let _ = ':'.parse_next(input)?;
+            let _ = take_till(0.., '\n').parse_next(input)?;
+            let _ = opt('\n').parse_next(input)?;
+        }
+    }
+
+    let comp_body = parse_body(input, &mut comp_ctx)?;
+    ws(input)?;
+    let _ = '}'.parse_next(input)?;
+    ws(input)?;
+    let _ = ')'.parse_next(input)?;
+    ws(input)?;
+
+    // Parse result types from the trailing `: (...) -> (...)` or `: ... -> ...`
+    let rest_line = take_till(0.., '\n').parse_next(input)?;
+    let _ = opt('\n').parse_next(input)?;
+    let mut types = Vec::new();
+    if let Some(arrow_pos) = rest_line.rfind("-> ") {
+        let after = rest_line[arrow_pos + 3..].trim();
+        for part in split_tensor_types(after) {
+            types.push(parse_tensor_type_from_str(part.trim()));
+        }
+    }
+    if types.is_empty() {
+        types.push(TensorType::scalar(ElementType::F64));
+    }
+
+    let values = make_values(ctx, result_names, types);
+    Ok(Some(InstrResult {
+        values,
+        instr: Instruction::Sort {
+            inputs: operands,
+            dimension,
+            is_stable,
+            comparator: comp_body,
+            comparator_params: comp_params,
         },
     }))
 }

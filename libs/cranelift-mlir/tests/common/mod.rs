@@ -25,8 +25,7 @@ pub fn run_mlir_mem(mlir: &str, inputs: &[&[u8]], output_sizes: &[usize]) -> Vec
     let config = CompileConfig {
         force_pointer_abi_main: true,
     };
-    let compiled =
-        compile_module_with_config(&module, config).expect("compile failed (mem path)");
+    let compiled = compile_module_with_config(&module, config).expect("compile failed (mem path)");
     let fn_ptr = compiled.get_main_fn();
     let tick_fn: TickFn = unsafe { std::mem::transmute(fn_ptr) };
 
@@ -76,6 +75,12 @@ pub fn read_u64s(buf: &[u8]) -> Vec<u64> {
 pub fn read_i64s(buf: &[u8]) -> Vec<i64> {
     buf.chunks_exact(8)
         .map(|c| i64::from_le_bytes(c.try_into().unwrap()))
+        .collect()
+}
+
+pub fn read_i32s(buf: &[u8]) -> Vec<i32> {
+    buf.chunks_exact(4)
+        .map(|c| i32::from_le_bytes(c.try_into().unwrap()))
         .collect()
 }
 

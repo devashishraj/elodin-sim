@@ -31,10 +31,7 @@ fn test_inner_prng() {
     let _compiled = compile_module(&module).expect("compile failed");
 
     let inner_func = module.get_func("inner").expect("inner not found");
-    assert!(
-        !inner_func.params.is_empty(),
-        "inner should have params"
-    );
+    assert!(!inner_func.params.is_empty(), "inner should have params");
     assert!(
         !inner_func.result_types.is_empty(),
         "inner should have results"

@@ -24,7 +24,7 @@ All six regression examples pass with matched correctness:
 ## Quick Start
 
 ```bash
-cargo test -p cranelift-mlir --release          # all 172+ tests
+cargo test -p cranelift-mlir --release          # all 205+ tests
 ELODIN_BACKEND=cranelift bash scripts/ci/regress.sh --all  # full regression suite
 ```
 

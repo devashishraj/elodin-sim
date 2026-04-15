@@ -517,7 +517,7 @@ that was corrupting i32 index data.
 
 | Test Binary | Tests | Purpose |
 |-------------|-------|---------|
-| `ops.rs` | 157 | Per-op golden-value tests (scalar + pointer ABI) |
+| `ops.rs` | 182 | Per-op golden-value tests (scalar + pointer ABI) |
 | `e2e.rs` | 4 | Parse + compile for ball, drone, rocket, linalg-iree |
 | `three_body_e2e.rs` | 2 | Parse + compile + while-loop inspection |
 | `cube_sat_e2e.rs` | 3 | Parse + compile + single-tick execution |
@@ -525,7 +525,7 @@ that was corrupting i32 index data.
 | `drone_tick_test.rs` | 6 | Full tick execution with value checks |
 | Other integration tests | ~17 | threefry, sret, dynamic ops, closed calls, uniform pipeline |
 
-**Total: 189+ tests across 13 test binaries.**
+**Total: 205+ tests across 13 test binaries.**
 
 Test utilities are centralized in `tests/common/mod.rs` (`run_mlir`, `run_mlir_mem`,
 buffer helpers, assertion helpers) to avoid duplication across test files.
@@ -582,7 +582,14 @@ ELODIN_BACKEND=cranelift bash scripts/ci/regress.sh --all  # full regression sui
 | stablehlo.atan2 | yes | yes | yes | via libm/tensor_rt |
 | chlo.tan | yes | yes | yes | via libm |
 | chlo.acos | yes | yes | yes | via libm/tensor_rt |
+| chlo.asin | yes | yes | yes | via libm |
+| chlo.atan | yes | yes | yes | via libm (unary, distinct from atan2) |
+| chlo.sinh | yes | yes | yes | via libm |
+| chlo.cosh | yes | yes | yes | via libm |
+| chlo.erfc | yes | yes | yes | Cephes rational approximation |
 | chlo.erf_inv | yes | yes | yes | Cephes ndtri-based, ~15 digits f64 |
+| stablehlo.expm1 | yes | yes | yes | exp(x)-1, via libm |
+| stablehlo.cbrt | yes | yes | yes | cube root, via libm |
 | stablehlo.is_finite | yes | yes | yes | returns i1 |
 
 ### Comparison and Selection
@@ -648,6 +655,7 @@ ELODIN_BACKEND=cranelift bash scripts/ci/regress.sh --all  # full regression sui
 |----|--------|-------|
 | stablehlo.while | yes | outer-scope access, cross-ABI calls, nested |
 | stablehlo.case | yes | multi-branch dispatch |
+| stablehlo.sort | yes | single-operand, comparator region, ascending/descending |
 | func.call | yes | scalar ABI, sret, pointer ABI, cross-ABI marshaling |
 
 ### LAPACK Custom Calls
@@ -660,6 +668,11 @@ ELODIN_BACKEND=cranelift bash scripts/ci/regress.sh --all  # full regression sui
 | lapack_dgeqrf_ffi | yes | QR via faer |
 | lapack_dorgqr_ffi | yes | Q extraction via Householder |
 | lapack_dsyevd_ffi | yes | symmetric eigendecomp via faer |
+| lapack_dgesv_ffi | yes | general linear solve via faer partial_piv_lu |
+| lapack_dpotrs_ffi | yes | Cholesky-based solve via triangular substitution |
+| lapack_dgelsd_ffi | yes | least-squares solve via SVD pseudoinverse |
+| lapack_dgeev_ffi | yes | non-symmetric eigendecomp via faer |
+| lapack_dgesvd_ffi | yes | full SVD via faer (m x m U, n x n V) |
 
 ---
 
@@ -729,22 +742,19 @@ The following areas were identified as gaps and have been fully implemented:
   dynamic_update_slice all have byte-generic variants for non-f64 types
 - **New StableHLO ops**: `rsqrt`, `log_plus_one` (log1p), `is_finite`, `not`, `ceil`,
   `shift_right_arithmetic` -- parser, IR, scalar lowering, pointer-ABI lowering, tests
+- **7 new math ops**: `chlo.asin`, `chlo.atan`, `chlo.sinh`, `chlo.cosh`, `chlo.erfc`,
+  `stablehlo.expm1`, `stablehlo.cbrt` -- all via libm/Cephes, both ABI paths
+- **`stablehlo.sort`**: single-operand sort with comparator region parsing, ascending/
+  descending detection, both scalar and pointer-ABI paths
+- **5 new LAPACK targets**: `dgesv` (general solve), `dpotrs` (Cholesky solve),
+  `dgelsd` (least squares), `dgeev` (non-symmetric eigen), `dgesvd` (full SVD)
+- **Integer remainder**: pointer-ABI `remainder` now handles i64/i32 types
+- **Reduce And/Or**: runtime support wired for boolean reduce operations
 
 ### Remaining Gap 1: Unimplemented StableHLO Ops
 
-Operations that JAX can emit but have no parser, IR variant, or lowering.
-
-#### High Likelihood (common in physics/control simulations)
-
-| StableHLO Op | Description | When JAX Emits It |
-|--------------|-------------|-------------------|
-| `stablehlo.sort` | Sort along a dimension | `jnp.sort`, `jnp.argsort`, `jnp.median` |
-| `chlo.asin` | Arcsine | `jnp.arcsin`, coordinate transforms |
-| `chlo.atan` | Arctangent (1-arg) | `jnp.arctan`, orbit mechanics |
-| `chlo.sinh` / `chlo.cosh` | Hyperbolic trig | `jnp.sinh`, `jnp.cosh`, thermal models |
-| `chlo.erfc` | Complementary error function | `jax.scipy.special.erfc` |
-| `stablehlo.expm1` | exp(x) - 1 | `jnp.expm1`, numerical stability |
-| `stablehlo.cbrt` | Cube root | `jnp.cbrt`, gravitational potential |
+All high-likelihood ops have been implemented. Remaining gaps are medium and low
+likelihood ops that no current simulation requires:
 
 #### Medium Likelihood (advanced simulations, ML-in-the-loop)
 
@@ -772,11 +782,6 @@ Operations that JAX can emit but have no parser, IR variant, or lowering.
 
 | LAPACK Target | Operation | JAX API | Priority |
 |---------------|-----------|---------|----------|
-| `lapack_dgeev_ffi` | Non-symmetric eigendecomp | `jnp.linalg.eig` | Medium |
-| `lapack_dgelsd_ffi` | Least-squares solve | `jnp.linalg.lstsq` | Medium |
-| `lapack_dgesv_ffi` | General linear solve | `jnp.linalg.solve` | Medium |
-| `lapack_dpotrs_ffi` | Cholesky-based solve | `jax.scipy.linalg.cho_solve` | Medium |
-| `lapack_dgesvd_ffi` | Full SVD | `jnp.linalg.svd(full_matrices=True)` | Low |
 | `lapack_dsytrd_ffi` | Tridiagonal reduction | Internal to eigensolvers | Low |
 
 ### Remaining Gap 3: Type Permutations Still Missing
@@ -785,10 +790,7 @@ Most type coverage is now complete. Remaining gaps are edge cases:
 
 | Area | Gap | Risk |
 |------|-----|------|
-| `select` pointer-ABI | f32, ui32 types missing | Low -- JAX converts to f64 for select |
-| `remainder` pointer-ABI | integer types (i64/i32) | Low -- scalar path handles via `srem` |
 | `power` pointer-ABI | integer types | Low -- integer power is rare |
-| `reduce` pointer-ABI (and/or) | boolean reduce | Low -- used in logical aggregation |
 | `pad` pointer-ABI | integer types | Low -- padding is almost always on float data |
 | `matmul` pointer-ABI | integer types | Low -- matrix multiply on integers is rare |
 
@@ -803,10 +805,21 @@ Most type coverage is now complete. Remaining gaps are edge cases:
 
 ### Summary: Recommended Next Additions
 
-1. **`chlo.asin`**, **`chlo.atan`** -- trivial unary libm ops, common in aerospace
-2. **`stablehlo.sort`** -- needed for `jnp.argsort`, `jnp.median`; complex (requires
-   comparator function support)
-3. **`lapack_dgesv_ffi`** and **`lapack_dpotrs_ffi`** -- general and Cholesky-based
-   solvers for Kalman filter pipelines
-4. **`stablehlo.expm1`** and **`chlo.sinh`/`chlo.cosh`** -- trivial libm ops for
-   numerical stability and thermal models
+All previously recommended high-priority items have been implemented:
+- `chlo.asin`, `chlo.atan`, `chlo.sinh`, `chlo.cosh`, `chlo.erfc`,
+  `stablehlo.expm1`, `stablehlo.cbrt` (7 unary libm ops)
+- `stablehlo.sort` (with comparator region support)
+- `lapack_dgesv_ffi`, `lapack_dpotrs_ffi`, `lapack_dgelsd_ffi`,
+  `lapack_dgeev_ffi`, `lapack_dgesvd_ffi` (5 LAPACK targets)
+- Integer remainder pointer-ABI, reduce And/Or runtime support
+
+Remaining additions for future work (none currently needed by simulations):
+
+1. **`stablehlo.reduce_window`** -- needed for pooling / moving averages;
+   requires embedded reducer region (high effort)
+2. **`stablehlo.convolution`** -- needed for sensor processing / neural net
+   controllers; very complex attribute set (very high effort)
+3. **`stablehlo.map`** -- elementwise application of arbitrary subgraph;
+   requires embedded body region (high effort)
+4. **SIMD vectorization** -- Cranelift supports SIMD types; elementwise ops
+   on small tensors could be vectorized for further speedup

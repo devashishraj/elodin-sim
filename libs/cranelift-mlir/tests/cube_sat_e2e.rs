@@ -42,10 +42,11 @@ fn run_cube_sat_single_tick() {
     // Set row 0 = [0,0,0,1, 6778100,0,0]
     {
         let pos_buf = &mut input_bufs[2]; // %arg2: tensor<2x7xf64>
-        let pos: [f64; 14] = [0.0, 0.0, 0.0, 1.0, 6778100.0, 0.0, 0.0,
-                               0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let pos: [f64; 14] = [
+            0.0, 0.0, 0.0, 1.0, 6778100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        ];
         for (i, &v) in pos.iter().enumerate() {
-            pos_buf[i*8..(i+1)*8].copy_from_slice(&v.to_le_bytes());
+            pos_buf[i * 8..(i + 1) * 8].copy_from_slice(&v.to_le_bytes());
         }
     }
     // %arg16 = tensor<4xf64> (quaternion) = [0,0,0,1]
@@ -53,7 +54,7 @@ fn run_cube_sat_single_tick() {
         let q_buf = &mut input_bufs[16]; // %arg16: tensor<4xf64>
         let q: [f64; 4] = [0.0, 0.0, 0.0, 1.0];
         for (i, &v) in q.iter().enumerate() {
-            q_buf[i*8..(i+1)*8].copy_from_slice(&v.to_le_bytes());
+            q_buf[i * 8..(i + 1) * 8].copy_from_slice(&v.to_le_bytes());
         }
     }
     // Set inertia for 3kg satellite: mass in the last element of appropriate param
@@ -61,10 +62,11 @@ fn run_cube_sat_single_tick() {
     // Set same position for consistency
     {
         let pos_buf = &mut input_bufs[23]; // %arg23: tensor<2x7xf64>
-        let pos: [f64; 14] = [0.0, 0.0, 0.0, 1.0, 6778100.0, 0.0, 0.0,
-                               0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let pos: [f64; 14] = [
+            0.0, 0.0, 0.0, 1.0, 6778100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        ];
         for (i, &v) in pos.iter().enumerate() {
-            pos_buf[i*8..(i+1)*8].copy_from_slice(&v.to_le_bytes());
+            pos_buf[i * 8..(i + 1) * 8].copy_from_slice(&v.to_le_bytes());
         }
     }
 
@@ -80,7 +82,8 @@ fn run_cube_sat_single_tick() {
 
     // Output 0: tensor<2x6xf64> (updated wrench)
     let wrench_bytes = &output_bufs[0];
-    let wrench: Vec<f64> = wrench_bytes.chunks(8)
+    let wrench: Vec<f64> = wrench_bytes
+        .chunks(8)
         .map(|c| f64::from_le_bytes(c.try_into().unwrap()))
         .collect();
     eprintln!("wrench output: {:?}", &wrench);

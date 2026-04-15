@@ -412,6 +412,34 @@ pub enum Instruction {
         lhs: ValueId,
         rhs: ValueId,
     },
+    Asin {
+        operand: ValueId,
+    },
+    Atan {
+        operand: ValueId,
+    },
+    Sinh {
+        operand: ValueId,
+    },
+    Cosh {
+        operand: ValueId,
+    },
+    Erfc {
+        operand: ValueId,
+    },
+    Expm1 {
+        operand: ValueId,
+    },
+    Cbrt {
+        operand: ValueId,
+    },
+    Sort {
+        inputs: Vec<ValueId>,
+        dimension: i64,
+        is_stable: bool,
+        comparator: Vec<InstrResult>,
+        comparator_params: Vec<ValueId>,
+    },
 }
 
 #[derive(Debug, Clone)]
