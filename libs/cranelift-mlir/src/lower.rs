@@ -33,8 +33,22 @@ pub struct CompileConfig {
 
 type TensorVals = Vec<Value>;
 
-const MAX_REG_RETURNS: usize = 8;
 const LARGE_TENSOR_THRESHOLD: usize = 64;
+
+fn max_reg_returns() -> usize {
+    #[cfg(target_arch = "x86_64")]
+    {
+        2
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        8
+    }
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    {
+        2
+    }
+}
 const F64_BYTES: usize = 8;
 const I32_BYTES: usize = 4;
 const SLOT_ALIGN: u8 = 3;
@@ -134,7 +148,7 @@ fn total_return_elements(result_types: &[TensorType]) -> usize {
 }
 
 fn needs_sret(result_types: &[TensorType]) -> bool {
-    total_return_elements(result_types) > MAX_REG_RETURNS
+    total_return_elements(result_types) > max_reg_returns()
 }
 
 fn add_tensor_params(sig: &mut Signature, ty: &TensorType) {
