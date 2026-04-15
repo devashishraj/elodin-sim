@@ -20,143 +20,46 @@ unsafe fn f64_unary<'a>(dst: *mut f64, a: *const f64, n: usize) -> (&'a mut [f64
 }
 
 // ---------------------------------------------------------------------------
-// Elementwise binary operations (f64)
+// Macro-generated elementwise operations
 // ---------------------------------------------------------------------------
 
-pub extern "C" fn tensor_add_f64(dst: *mut f64, a: *const f64, b: *const f64, n: usize) {
-    let (dst, a, b) = unsafe { f64_slices(dst, a, b, n) };
-    for i in 0..n {
-        dst[i] = a[i] + b[i];
-    }
+macro_rules! binary_f64_op {
+    ($name:ident, $op:expr) => {
+        pub extern "C" fn $name(dst: *mut f64, a: *const f64, b: *const f64, n: usize) {
+            let (dst, a, b) = unsafe { f64_slices(dst, a, b, n) };
+            for i in 0..n {
+                dst[i] = ($op)(a[i], b[i]);
+            }
+        }
+    };
 }
 
-pub extern "C" fn tensor_sub_f64(dst: *mut f64, a: *const f64, b: *const f64, n: usize) {
-    let (dst, a, b) = unsafe { f64_slices(dst, a, b, n) };
-    for i in 0..n {
-        dst[i] = a[i] - b[i];
-    }
+binary_f64_op!(tensor_add_f64, |a: f64, b: f64| a + b);
+binary_f64_op!(tensor_sub_f64, |a: f64, b: f64| a - b);
+binary_f64_op!(tensor_mul_f64, |a: f64, b: f64| a * b);
+binary_f64_op!(tensor_div_f64, |a: f64, b: f64| a / b);
+binary_f64_op!(tensor_max_f64, |a: f64, b: f64| if a > b { a } else { b });
+binary_f64_op!(tensor_min_f64, |a: f64, b: f64| if a < b { a } else { b });
+binary_f64_op!(tensor_pow_f64, |a: f64, b: f64| a.powf(b));
+binary_f64_op!(tensor_rem_f64, |a: f64, b: f64| a % b);
+
+macro_rules! binary_int_op {
+    ($name:ident, $ty:ty, $op:expr) => {
+        pub extern "C" fn $name(dst: *mut $ty, a: *const $ty, b: *const $ty, n: usize) {
+            let dst = unsafe { slice::from_raw_parts_mut(dst, n) };
+            let (a, b) = unsafe { (slice::from_raw_parts(a, n), slice::from_raw_parts(b, n)) };
+            for i in 0..n {
+                dst[i] = ($op)(a[i], b[i]);
+            }
+        }
+    };
 }
 
-pub extern "C" fn tensor_mul_f64(dst: *mut f64, a: *const f64, b: *const f64, n: usize) {
-    let (dst, a, b) = unsafe { f64_slices(dst, a, b, n) };
-    for i in 0..n {
-        dst[i] = a[i] * b[i];
-    }
-}
-
-pub extern "C" fn tensor_div_f64(dst: *mut f64, a: *const f64, b: *const f64, n: usize) {
-    let (dst, a, b) = unsafe { f64_slices(dst, a, b, n) };
-    for i in 0..n {
-        dst[i] = a[i] / b[i];
-    }
-}
-
-pub extern "C" fn tensor_max_f64(dst: *mut f64, a: *const f64, b: *const f64, n: usize) {
-    let (dst, a, b) = unsafe { f64_slices(dst, a, b, n) };
-    for i in 0..n {
-        dst[i] = if a[i] > b[i] { a[i] } else { b[i] };
-    }
-}
-
-pub extern "C" fn tensor_min_f64(dst: *mut f64, a: *const f64, b: *const f64, n: usize) {
-    let (dst, a, b) = unsafe { f64_slices(dst, a, b, n) };
-    for i in 0..n {
-        dst[i] = if a[i] < b[i] { a[i] } else { b[i] };
-    }
-}
-
-pub extern "C" fn tensor_pow_f64(dst: *mut f64, a: *const f64, b: *const f64, n: usize) {
-    let (dst, a, b) = unsafe { f64_slices(dst, a, b, n) };
-    for i in 0..n {
-        dst[i] = a[i].powf(b[i]);
-    }
-}
-
-pub extern "C" fn tensor_rem_f64(dst: *mut f64, a: *const f64, b: *const f64, n: usize) {
-    let (dst, a, b) = unsafe { f64_slices(dst, a, b, n) };
-    for i in 0..n {
-        dst[i] = a[i] % b[i];
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Elementwise binary operations (i64)
-// ---------------------------------------------------------------------------
-
-pub extern "C" fn tensor_add_i64(dst: *mut i64, a: *const i64, b: *const i64, n: usize) {
-    let dst = unsafe { slice::from_raw_parts_mut(dst, n) };
-    let (a, b) = unsafe { (slice::from_raw_parts(a, n), slice::from_raw_parts(b, n)) };
-    for i in 0..n {
-        dst[i] = a[i].wrapping_add(b[i]);
-    }
-}
-
-pub extern "C" fn tensor_sub_i64(dst: *mut i64, a: *const i64, b: *const i64, n: usize) {
-    let dst = unsafe { slice::from_raw_parts_mut(dst, n) };
-    let (a, b) = unsafe { (slice::from_raw_parts(a, n), slice::from_raw_parts(b, n)) };
-    for i in 0..n {
-        dst[i] = a[i].wrapping_sub(b[i]);
-    }
-}
-
-pub extern "C" fn tensor_mul_i64(dst: *mut i64, a: *const i64, b: *const i64, n: usize) {
-    let dst = unsafe { slice::from_raw_parts_mut(dst, n) };
-    let (a, b) = unsafe { (slice::from_raw_parts(a, n), slice::from_raw_parts(b, n)) };
-    for i in 0..n {
-        dst[i] = a[i].wrapping_mul(b[i]);
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Elementwise binary operations (i32)
-// ---------------------------------------------------------------------------
-
-pub extern "C" fn tensor_select_i32(
-    dst: *mut i32,
-    cond: *const u8,
-    on_true: *const i32,
-    on_false: *const i32,
-    n: usize,
-) {
-    let cond = unsafe { slice::from_raw_parts(cond, n) };
-    let t = unsafe { slice::from_raw_parts(on_true, n) };
-    let f = unsafe { slice::from_raw_parts(on_false, n) };
-    let dst = unsafe { slice::from_raw_parts_mut(dst, n) };
-    for i in 0..n {
-        dst[i] = if cond[i] != 0 { t[i] } else { f[i] };
-    }
-}
-
-pub extern "C" fn tensor_widen_i32_to_i64(dst: *mut i64, src: *const i32, n: usize) {
-    let src = unsafe { slice::from_raw_parts(src, n) };
-    let dst = unsafe { slice::from_raw_parts_mut(dst, n) };
-    for i in 0..n {
-        dst[i] = src[i] as i64;
-    }
-}
-
-pub extern "C" fn tensor_broadcast_i32(dst: *mut i32, val: i32, n: usize) {
-    let dst = unsafe { slice::from_raw_parts_mut(dst, n) };
-    for i in 0..n {
-        dst[i] = val;
-    }
-}
-
-pub extern "C" fn tensor_add_i32(dst: *mut i32, a: *const i32, b: *const i32, n: usize) {
-    let dst = unsafe { slice::from_raw_parts_mut(dst, n) };
-    let (a, b) = unsafe { (slice::from_raw_parts(a, n), slice::from_raw_parts(b, n)) };
-    for i in 0..n {
-        dst[i] = a[i].wrapping_add(b[i]);
-    }
-}
-
-pub extern "C" fn tensor_sub_i32(dst: *mut i32, a: *const i32, b: *const i32, n: usize) {
-    let dst = unsafe { slice::from_raw_parts_mut(dst, n) };
-    let (a, b) = unsafe { (slice::from_raw_parts(a, n), slice::from_raw_parts(b, n)) };
-    for i in 0..n {
-        dst[i] = a[i].wrapping_sub(b[i]);
-    }
-}
+binary_int_op!(tensor_add_i64, i64, |a: i64, b: i64| a.wrapping_add(b));
+binary_int_op!(tensor_sub_i64, i64, |a: i64, b: i64| a.wrapping_sub(b));
+binary_int_op!(tensor_mul_i64, i64, |a: i64, b: i64| a.wrapping_mul(b));
+binary_int_op!(tensor_add_i32, i32, |a: i32, b: i32| a.wrapping_add(b));
+binary_int_op!(tensor_sub_i32, i32, |a: i32, b: i32| a.wrapping_sub(b));
 
 pub extern "C" fn tensor_div_i32(dst: *mut i32, a: *const i32, b: *const i32, n: usize) {
     let dst = unsafe { slice::from_raw_parts_mut(dst, n) };
@@ -174,73 +77,31 @@ pub extern "C" fn tensor_div_ui32(dst: *mut u32, a: *const u32, b: *const u32, n
     }
 }
 
-pub extern "C" fn tensor_cmp_lt_i32(dst: *mut u8, a: *const i32, b: *const i32, n: usize) {
-    let (a, b) = unsafe { (slice::from_raw_parts(a, n), slice::from_raw_parts(b, n)) };
-    let dst = unsafe { slice::from_raw_parts_mut(dst, n) };
-    for i in 0..n {
-        dst[i] = (a[i] < b[i]) as u8;
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Elementwise unary operations (f64)
 // ---------------------------------------------------------------------------
 
-pub extern "C" fn tensor_neg_f64(dst: *mut f64, a: *const f64, n: usize) {
-    let (dst, a) = unsafe { f64_unary(dst, a, n) };
-    for i in 0..n {
-        dst[i] = -a[i];
-    }
+macro_rules! unary_f64_op {
+    ($name:ident, $op:expr) => {
+        pub extern "C" fn $name(dst: *mut f64, a: *const f64, n: usize) {
+            let (dst, a) = unsafe { f64_unary(dst, a, n) };
+            for i in 0..n {
+                dst[i] = ($op)(a[i]);
+            }
+        }
+    };
 }
 
-pub extern "C" fn tensor_sqrt_f64(dst: *mut f64, a: *const f64, n: usize) {
-    let (dst, a) = unsafe { f64_unary(dst, a, n) };
-    for i in 0..n {
-        dst[i] = a[i].sqrt();
-    }
-}
-
-pub extern "C" fn tensor_abs_f64(dst: *mut f64, a: *const f64, n: usize) {
-    let (dst, a) = unsafe { f64_unary(dst, a, n) };
-    for i in 0..n {
-        dst[i] = a[i].abs();
-    }
-}
-
-pub extern "C" fn tensor_floor_f64(dst: *mut f64, a: *const f64, n: usize) {
-    let (dst, a) = unsafe { f64_unary(dst, a, n) };
-    for i in 0..n {
-        dst[i] = a[i].floor();
-    }
-}
-
-pub extern "C" fn tensor_sin_f64(dst: *mut f64, a: *const f64, n: usize) {
-    let (dst, a) = unsafe { f64_unary(dst, a, n) };
-    for i in 0..n {
-        dst[i] = a[i].sin();
-    }
-}
-
-pub extern "C" fn tensor_cos_f64(dst: *mut f64, a: *const f64, n: usize) {
-    let (dst, a) = unsafe { f64_unary(dst, a, n) };
-    for i in 0..n {
-        dst[i] = a[i].cos();
-    }
-}
-
-pub extern "C" fn tensor_exp_f64(dst: *mut f64, a: *const f64, n: usize) {
-    let (dst, a) = unsafe { f64_unary(dst, a, n) };
-    for i in 0..n {
-        dst[i] = a[i].exp();
-    }
-}
-
-pub extern "C" fn tensor_log_f64(dst: *mut f64, a: *const f64, n: usize) {
-    let (dst, a) = unsafe { f64_unary(dst, a, n) };
-    for i in 0..n {
-        dst[i] = a[i].ln();
-    }
-}
+unary_f64_op!(tensor_neg_f64, |x: f64| -x);
+unary_f64_op!(tensor_sqrt_f64, f64::sqrt);
+unary_f64_op!(tensor_abs_f64, f64::abs);
+unary_f64_op!(tensor_floor_f64, f64::floor);
+unary_f64_op!(tensor_sin_f64, f64::sin);
+unary_f64_op!(tensor_cos_f64, f64::cos);
+unary_f64_op!(tensor_exp_f64, f64::exp);
+unary_f64_op!(tensor_log_f64, f64::ln);
+unary_f64_op!(tensor_tan_f64, f64::tan);
+unary_f64_op!(tensor_tanh_f64, f64::tanh);
 
 pub extern "C" fn tensor_sign_f64(dst: *mut f64, a: *const f64, n: usize) {
     let (dst, a) = unsafe { f64_unary(dst, a, n) };
@@ -255,242 +116,130 @@ pub extern "C" fn tensor_sign_f64(dst: *mut f64, a: *const f64, n: usize) {
     }
 }
 
-pub extern "C" fn tensor_tan_f64(dst: *mut f64, a: *const f64, n: usize) {
-    let (dst, a) = unsafe { f64_unary(dst, a, n) };
-    for i in 0..n {
-        dst[i] = a[i].tan();
-    }
-}
-
-pub extern "C" fn tensor_tanh_f64(dst: *mut f64, a: *const f64, n: usize) {
-    let (dst, a) = unsafe { f64_unary(dst, a, n) };
-    for i in 0..n {
-        dst[i] = a[i].tanh();
-    }
-}
-
 // ---------------------------------------------------------------------------
-// Comparison: writes i8 (0 or 1) results
+// Comparison operations
 // ---------------------------------------------------------------------------
 
-pub extern "C" fn tensor_cmp_eq_f64(dst: *mut u8, a: *const f64, b: *const f64, n: usize) {
-    let (a, b) = unsafe { (slice::from_raw_parts(a, n), slice::from_raw_parts(b, n)) };
-    let dst = unsafe { slice::from_raw_parts_mut(dst, n) };
-    for i in 0..n {
-        dst[i] = (a[i] == b[i]) as u8;
-    }
+macro_rules! cmp_op {
+    ($name:ident, $ty:ty, $op:expr) => {
+        pub extern "C" fn $name(dst: *mut u8, a: *const $ty, b: *const $ty, n: usize) {
+            let (a, b) = unsafe { (slice::from_raw_parts(a, n), slice::from_raw_parts(b, n)) };
+            let dst = unsafe { slice::from_raw_parts_mut(dst, n) };
+            for i in 0..n {
+                dst[i] = ($op)(a[i], b[i]) as u8;
+            }
+        }
+    };
 }
 
-pub extern "C" fn tensor_cmp_lt_f64(dst: *mut u8, a: *const f64, b: *const f64, n: usize) {
-    let (a, b) = unsafe { (slice::from_raw_parts(a, n), slice::from_raw_parts(b, n)) };
-    let dst = unsafe { slice::from_raw_parts_mut(dst, n) };
-    for i in 0..n {
-        dst[i] = (a[i] < b[i]) as u8;
-    }
-}
-
-pub extern "C" fn tensor_cmp_le_f64(dst: *mut u8, a: *const f64, b: *const f64, n: usize) {
-    let (a, b) = unsafe { (slice::from_raw_parts(a, n), slice::from_raw_parts(b, n)) };
-    let dst = unsafe { slice::from_raw_parts_mut(dst, n) };
-    for i in 0..n {
-        dst[i] = (a[i] <= b[i]) as u8;
-    }
-}
-
-pub extern "C" fn tensor_cmp_gt_f64(dst: *mut u8, a: *const f64, b: *const f64, n: usize) {
-    let (a, b) = unsafe { (slice::from_raw_parts(a, n), slice::from_raw_parts(b, n)) };
-    let dst = unsafe { slice::from_raw_parts_mut(dst, n) };
-    for i in 0..n {
-        dst[i] = (a[i] > b[i]) as u8;
-    }
-}
-
-pub extern "C" fn tensor_cmp_ge_f64(dst: *mut u8, a: *const f64, b: *const f64, n: usize) {
-    let (a, b) = unsafe { (slice::from_raw_parts(a, n), slice::from_raw_parts(b, n)) };
-    let dst = unsafe { slice::from_raw_parts_mut(dst, n) };
-    for i in 0..n {
-        dst[i] = (a[i] >= b[i]) as u8;
-    }
-}
-
-pub extern "C" fn tensor_cmp_ne_f64(dst: *mut u8, a: *const f64, b: *const f64, n: usize) {
-    let (a, b) = unsafe { (slice::from_raw_parts(a, n), slice::from_raw_parts(b, n)) };
-    let dst = unsafe { slice::from_raw_parts_mut(dst, n) };
-    for i in 0..n {
-        dst[i] = (a[i] != b[i]) as u8;
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Integer comparison (i64)
-// ---------------------------------------------------------------------------
-
-pub extern "C" fn tensor_cmp_eq_i64(dst: *mut u8, a: *const i64, b: *const i64, n: usize) {
-    let (a, b) = unsafe { (slice::from_raw_parts(a, n), slice::from_raw_parts(b, n)) };
-    let dst = unsafe { slice::from_raw_parts_mut(dst, n) };
-    for i in 0..n {
-        dst[i] = (a[i] == b[i]) as u8;
-    }
-}
-
-pub extern "C" fn tensor_cmp_lt_i64(dst: *mut u8, a: *const i64, b: *const i64, n: usize) {
-    let (a, b) = unsafe { (slice::from_raw_parts(a, n), slice::from_raw_parts(b, n)) };
-    let dst = unsafe { slice::from_raw_parts_mut(dst, n) };
-    for i in 0..n {
-        dst[i] = (a[i] < b[i]) as u8;
-    }
-}
+cmp_op!(tensor_cmp_eq_f64, f64, |a: f64, b: f64| a == b);
+cmp_op!(tensor_cmp_lt_f64, f64, |a: f64, b: f64| a < b);
+cmp_op!(tensor_cmp_le_f64, f64, |a: f64, b: f64| a <= b);
+cmp_op!(tensor_cmp_gt_f64, f64, |a: f64, b: f64| a > b);
+cmp_op!(tensor_cmp_ge_f64, f64, |a: f64, b: f64| a >= b);
+cmp_op!(tensor_cmp_ne_f64, f64, |a: f64, b: f64| a != b);
+cmp_op!(tensor_cmp_eq_i64, i64, |a: i64, b: i64| a == b);
+cmp_op!(tensor_cmp_lt_i64, i64, |a: i64, b: i64| a < b);
+cmp_op!(tensor_cmp_lt_i32, i32, |a: i32, b: i32| a < b);
 
 // ---------------------------------------------------------------------------
 // Select: dst[i] = cond[i] ? on_true[i] : on_false[i]
 // ---------------------------------------------------------------------------
 
-pub extern "C" fn tensor_select_f64(
-    dst: *mut f64,
-    cond: *const u8,
-    on_true: *const f64,
-    on_false: *const f64,
-    n: usize,
-) {
-    let cond = unsafe { slice::from_raw_parts(cond, n) };
-    let t = unsafe { slice::from_raw_parts(on_true, n) };
-    let f = unsafe { slice::from_raw_parts(on_false, n) };
-    let dst = unsafe { slice::from_raw_parts_mut(dst, n) };
-    for i in 0..n {
-        dst[i] = if cond[i] != 0 { t[i] } else { f[i] };
-    }
+macro_rules! select_op {
+    ($name:ident, $ty:ty) => {
+        pub extern "C" fn $name(
+            dst: *mut $ty,
+            cond: *const u8,
+            on_true: *const $ty,
+            on_false: *const $ty,
+            n: usize,
+        ) {
+            let cond = unsafe { slice::from_raw_parts(cond, n) };
+            let t = unsafe { slice::from_raw_parts(on_true, n) };
+            let f = unsafe { slice::from_raw_parts(on_false, n) };
+            let dst = unsafe { slice::from_raw_parts_mut(dst, n) };
+            for i in 0..n {
+                dst[i] = if cond[i] != 0 { t[i] } else { f[i] };
+            }
+        }
+    };
 }
 
-pub extern "C" fn tensor_select_i64(
-    dst: *mut i64,
-    cond: *const u8,
-    on_true: *const i64,
-    on_false: *const i64,
-    n: usize,
-) {
-    let cond = unsafe { slice::from_raw_parts(cond, n) };
-    let t = unsafe { slice::from_raw_parts(on_true, n) };
-    let f = unsafe { slice::from_raw_parts(on_false, n) };
-    let dst = unsafe { slice::from_raw_parts_mut(dst, n) };
-    for i in 0..n {
-        dst[i] = if cond[i] != 0 { t[i] } else { f[i] };
-    }
-}
+select_op!(tensor_select_i32, i32);
+select_op!(tensor_select_f64, f64);
+select_op!(tensor_select_i64, i64);
 
 // ---------------------------------------------------------------------------
 // Type conversion
 // ---------------------------------------------------------------------------
 
-pub extern "C" fn tensor_convert_i64_to_f64(dst: *mut f64, a: *const i64, n: usize) {
-    let a = unsafe { slice::from_raw_parts(a, n) };
-    let dst = unsafe { slice::from_raw_parts_mut(dst, n) };
-    for i in 0..n {
-        dst[i] = a[i] as f64;
-    }
+macro_rules! convert_op {
+    ($name:ident, $src_ty:ty, $dst_ty:ty, $conv:expr) => {
+        pub extern "C" fn $name(dst: *mut $dst_ty, a: *const $src_ty, n: usize) {
+            let a = unsafe { slice::from_raw_parts(a, n) };
+            let dst = unsafe { slice::from_raw_parts_mut(dst, n) };
+            for i in 0..n {
+                dst[i] = ($conv)(a[i]);
+            }
+        }
+    };
 }
 
-pub extern "C" fn tensor_convert_f64_to_i64(dst: *mut i64, a: *const f64, n: usize) {
-    let a = unsafe { slice::from_raw_parts(a, n) };
-    let dst = unsafe { slice::from_raw_parts_mut(dst, n) };
-    for i in 0..n {
-        dst[i] = a[i] as i64;
-    }
-}
-
-pub extern "C" fn tensor_convert_i1_to_f64(dst: *mut f64, a: *const u8, n: usize) {
-    let a = unsafe { slice::from_raw_parts(a, n) };
-    let dst = unsafe { slice::from_raw_parts_mut(dst, n) };
-    for i in 0..n {
-        dst[i] = if a[i] != 0 { 1.0 } else { 0.0 };
-    }
-}
-
-pub extern "C" fn tensor_convert_f64_to_i32(dst: *mut i32, a: *const f64, n: usize) {
-    let a = unsafe { slice::from_raw_parts(a, n) };
-    let dst = unsafe { slice::from_raw_parts_mut(dst, n) };
-    for i in 0..n {
-        dst[i] = a[i] as i32;
-    }
-}
-
-pub extern "C" fn tensor_convert_i1_to_i32(dst: *mut i32, a: *const u8, n: usize) {
-    let a = unsafe { slice::from_raw_parts(a, n) };
-    let dst = unsafe { slice::from_raw_parts_mut(dst, n) };
-    for i in 0..n {
-        dst[i] = a[i] as i32;
-    }
-}
-
-pub extern "C" fn tensor_convert_i64_to_i32(dst: *mut i32, a: *const i64, n: usize) {
-    let a = unsafe { slice::from_raw_parts(a, n) };
-    let dst = unsafe { slice::from_raw_parts_mut(dst, n) };
-    for i in 0..n {
-        dst[i] = a[i] as i32;
-    }
-}
-
-pub extern "C" fn tensor_convert_i32_to_f64(dst: *mut f64, a: *const i32, n: usize) {
-    let a = unsafe { slice::from_raw_parts(a, n) };
-    let dst = unsafe { slice::from_raw_parts_mut(dst, n) };
-    for i in 0..n {
-        dst[i] = a[i] as f64;
-    }
-}
-
-pub extern "C" fn tensor_convert_f64_to_f32(dst: *mut f32, a: *const f64, n: usize) {
-    let a = unsafe { slice::from_raw_parts(a, n) };
-    let dst = unsafe { slice::from_raw_parts_mut(dst, n) };
-    for i in 0..n {
-        dst[i] = a[i] as f32;
-    }
-}
-
-pub extern "C" fn tensor_convert_f32_to_f64(dst: *mut f64, a: *const f32, n: usize) {
-    let a = unsafe { slice::from_raw_parts(a, n) };
-    let dst = unsafe { slice::from_raw_parts_mut(dst, n) };
-    for i in 0..n {
-        dst[i] = a[i] as f64;
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Iota: fill with index values
-// ---------------------------------------------------------------------------
-
-pub extern "C" fn tensor_iota_i64(dst: *mut i64, n: usize) {
-    let dst = unsafe { slice::from_raw_parts_mut(dst, n) };
-    for i in 0..n {
-        dst[i] = i as i64;
-    }
-}
-
-pub extern "C" fn tensor_iota_f64(dst: *mut f64, n: usize) {
-    let dst = unsafe { slice::from_raw_parts_mut(dst, n) };
-    for i in 0..n {
-        dst[i] = i as f64;
-    }
-}
+convert_op!(tensor_widen_i32_to_i64, i32, i64, |x: i32| x as i64);
+convert_op!(tensor_convert_i64_to_f64, i64, f64, |x: i64| x as f64);
+convert_op!(tensor_convert_f64_to_i64, f64, i64, |x: f64| x as i64);
+convert_op!(tensor_convert_i1_to_f64, u8, f64, |x: u8| if x != 0 {
+    1.0
+} else {
+    0.0
+});
+convert_op!(tensor_convert_f64_to_i32, f64, i32, |x: f64| x as i32);
+convert_op!(tensor_convert_i1_to_i32, u8, i32, |x: u8| x as i32);
+convert_op!(tensor_convert_i64_to_i32, i64, i32, |x: i64| x as i32);
+convert_op!(tensor_convert_i32_to_f64, i32, f64, |x: i32| x as f64);
+convert_op!(tensor_convert_f64_to_f32, f64, f32, |x: f64| x as f32);
+convert_op!(tensor_convert_f32_to_f64, f32, f64, |x: f32| x as f64);
 
 // ---------------------------------------------------------------------------
 // Broadcast: fill dst with a single scalar value
 // ---------------------------------------------------------------------------
 
-pub extern "C" fn tensor_broadcast_f64(dst: *mut f64, val: f64, n: usize) {
-    let dst = unsafe { slice::from_raw_parts_mut(dst, n) };
-    for i in 0..n {
-        dst[i] = val;
-    }
+macro_rules! broadcast_op {
+    ($name:ident, $ty:ty) => {
+        pub extern "C" fn $name(dst: *mut $ty, val: $ty, n: usize) {
+            let dst = unsafe { slice::from_raw_parts_mut(dst, n) };
+            for i in 0..n {
+                dst[i] = val;
+            }
+        }
+    };
 }
 
-pub extern "C" fn tensor_broadcast_i64(dst: *mut i64, val: i64, n: usize) {
-    let dst = unsafe { slice::from_raw_parts_mut(dst, n) };
-    for i in 0..n {
-        dst[i] = val;
-    }
-}
+broadcast_op!(tensor_broadcast_f64, f64);
+broadcast_op!(tensor_broadcast_i64, i64);
+broadcast_op!(tensor_broadcast_i32, i32);
 
 // ---------------------------------------------------------------------------
-// Memcpy (typed for f64 element size)
+// Iota: fill with index values
+// ---------------------------------------------------------------------------
+
+macro_rules! iota_op {
+    ($name:ident, $ty:ty) => {
+        pub extern "C" fn $name(dst: *mut $ty, n: usize) {
+            let dst = unsafe { slice::from_raw_parts_mut(dst, n) };
+            for i in 0..n {
+                dst[i] = i as $ty;
+            }
+        }
+    };
+}
+
+iota_op!(tensor_iota_i64, i64);
+iota_op!(tensor_iota_f64, f64);
+
+// ---------------------------------------------------------------------------
+// Memcpy
 // ---------------------------------------------------------------------------
 
 pub extern "C" fn tensor_memcpy(dst: *mut u8, src: *const u8, n_bytes: usize) {
@@ -512,69 +261,36 @@ pub extern "C" fn tensor_transpose_f64(dst: *mut f64, src: *const f64, rows: usi
 }
 
 // ---------------------------------------------------------------------------
-// Reduce sum along last axis: dst[i] = sum(src[i*cols .. i*cols+cols])
+// Reduce along last axis
 // ---------------------------------------------------------------------------
 
-pub extern "C" fn tensor_reduce_sum_f64(
-    dst: *mut f64,
-    src: *const f64,
-    outer: usize,
-    inner: usize,
-) {
-    let src = unsafe { slice::from_raw_parts(src, outer * inner) };
-    let dst = unsafe { slice::from_raw_parts_mut(dst, outer) };
-    for i in 0..outer {
-        let mut acc = 0.0f64;
-        for j in 0..inner {
-            acc += src[i * inner + j];
-        }
-        dst[i] = acc;
-    }
-}
-
-pub extern "C" fn tensor_reduce_max_f64(
-    dst: *mut f64,
-    src: *const f64,
-    outer: usize,
-    inner: usize,
-) {
-    let src = unsafe { slice::from_raw_parts(src, outer * inner) };
-    let dst = unsafe { slice::from_raw_parts_mut(dst, outer) };
-    for i in 0..outer {
-        let mut acc = f64::NEG_INFINITY;
-        for j in 0..inner {
-            let v = src[i * inner + j];
-            if v > acc {
-                acc = v;
+macro_rules! reduce_op {
+    ($name:ident, $init:expr, $update:expr) => {
+        pub extern "C" fn $name(
+            dst: *mut f64,
+            src: *const f64,
+            outer: usize,
+            inner: usize,
+        ) {
+            let src = unsafe { slice::from_raw_parts(src, outer * inner) };
+            let dst = unsafe { slice::from_raw_parts_mut(dst, outer) };
+            for i in 0..outer {
+                let mut acc: f64 = $init;
+                for j in 0..inner {
+                    acc = ($update)(acc, src[i * inner + j]);
+                }
+                dst[i] = acc;
             }
         }
-        dst[i] = acc;
-    }
+    };
 }
 
-pub extern "C" fn tensor_reduce_min_f64(
-    dst: *mut f64,
-    src: *const f64,
-    outer: usize,
-    inner: usize,
-) {
-    let src = unsafe { slice::from_raw_parts(src, outer * inner) };
-    let dst = unsafe { slice::from_raw_parts_mut(dst, outer) };
-    for i in 0..outer {
-        let mut acc = f64::INFINITY;
-        for j in 0..inner {
-            let v = src[i * inner + j];
-            if v < acc {
-                acc = v;
-            }
-        }
-        dst[i] = acc;
-    }
-}
+reduce_op!(tensor_reduce_sum_f64, 0.0, |acc: f64, v: f64| acc + v);
+reduce_op!(tensor_reduce_max_f64, f64::NEG_INFINITY, |acc: f64, v: f64| if v > acc { v } else { acc });
+reduce_op!(tensor_reduce_min_f64, f64::INFINITY, |acc: f64, v: f64| if v < acc { v } else { acc });
 
 // ---------------------------------------------------------------------------
 // Scatter: operand[indices[i]] = updates[i]
-// (simple 1D index-set pattern matching StableHLO scatter)
 // ---------------------------------------------------------------------------
 
 pub extern "C" fn tensor_scatter_f64(
@@ -603,8 +319,7 @@ pub extern "C" fn tensor_scatter_f64(
 }
 
 // ---------------------------------------------------------------------------
-// Gather: dst[i] = src[indices[i]]
-// (simple row-select pattern)
+// Gather: simple row-select pattern
 // ---------------------------------------------------------------------------
 
 pub extern "C" fn tensor_gather_f64(
@@ -629,8 +344,7 @@ pub extern "C" fn tensor_gather_f64(
 }
 
 // ---------------------------------------------------------------------------
-// N-D indexed gather: each batch element uses an N-element index vector to
-// look up a slice from a multi-dimensional source tensor.
+// N-D indexed gather
 // ---------------------------------------------------------------------------
 
 pub extern "C" fn tensor_gather_nd_f64(
@@ -693,7 +407,6 @@ pub extern "C" fn tensor_gather_nd_f64(
 
 // ---------------------------------------------------------------------------
 // Matrix multiply: C = A * B (row-major, naive triple loop)
-// Will be replaced with faer in Phase C.
 // ---------------------------------------------------------------------------
 
 pub extern "C" fn tensor_matmul_f64(
@@ -719,8 +432,7 @@ pub extern "C" fn tensor_matmul_f64(
 }
 
 // ---------------------------------------------------------------------------
-// N-dimensional broadcast: replicate src according to broadcast_dims mapping
-// src_shape mapped via broadcast_dims into dst_shape
+// N-dimensional broadcast
 // ---------------------------------------------------------------------------
 
 pub extern "C" fn tensor_broadcast_nd_f64(
@@ -769,7 +481,7 @@ pub extern "C" fn tensor_broadcast_nd_f64(
 }
 
 // ---------------------------------------------------------------------------
-// Slice: copy a rectangular slice from src into dst
+// Slice
 // ---------------------------------------------------------------------------
 
 pub extern "C" fn tensor_slice_f64(
@@ -909,7 +621,7 @@ pub extern "C" fn tensor_concat_nd_f64(
 }
 
 // ---------------------------------------------------------------------------
-// Pad: zero-pad a tensor
+// Pad
 // ---------------------------------------------------------------------------
 
 pub extern "C" fn tensor_pad_f64(
@@ -1045,29 +757,40 @@ pub extern "C" fn tensor_dynamic_update_slice_f64(
 }
 
 // ---------------------------------------------------------------------------
-// Iota N-dimensional: fills a tensor where element = coordinate along `dimension`
+// Iota N-dimensional
 // ---------------------------------------------------------------------------
 
-pub extern "C" fn tensor_iota_nd_i64(
-    dst: *mut i64,
-    n: usize,
-    shape: *const i64,
-    rank: usize,
-    dimension: usize,
-) {
-    let dst = unsafe { slice::from_raw_parts_mut(dst, n) };
-    let shape = unsafe { slice::from_raw_parts(shape, rank) };
+macro_rules! iota_nd_op {
+    ($name:ident, $ty:ty) => {
+        pub extern "C" fn $name(
+            dst: *mut $ty,
+            n: usize,
+            shape: *const i64,
+            rank: usize,
+            dimension: usize,
+        ) {
+            let dst = unsafe { slice::from_raw_parts_mut(dst, n) };
+            let shape = unsafe { slice::from_raw_parts(shape, rank) };
 
-    let mut strides = vec![1usize; rank];
-    for i in (0..rank.saturating_sub(1)).rev() {
-        strides[i] = strides[i + 1] * shape[i + 1] as usize;
-    }
+            let mut strides = vec![1usize; rank];
+            for i in (0..rank.saturating_sub(1)).rev() {
+                strides[i] = strides[i + 1] * shape[i + 1] as usize;
+            }
 
-    for flat in 0..n {
-        let coord = (flat / strides[dimension]) % shape[dimension] as usize;
-        dst[flat] = coord as i64;
-    }
+            for flat in 0..n {
+                let coord = (flat / strides[dimension]) % shape[dimension] as usize;
+                dst[flat] = coord as $ty;
+            }
+        }
+    };
 }
+
+iota_nd_op!(tensor_iota_nd_i64, i64);
+iota_nd_op!(tensor_iota_nd_f64, f64);
+
+// ---------------------------------------------------------------------------
+// N-D transpose
+// ---------------------------------------------------------------------------
 
 pub extern "C" fn tensor_transpose_nd_f64(
     dst: *mut f64,
@@ -1105,26 +828,5 @@ pub extern "C" fn tensor_transpose_nd_f64(
             src_flat += coord * src_strides[perm[d] as usize];
         }
         dst[flat_dst] = src[src_flat];
-    }
-}
-
-pub extern "C" fn tensor_iota_nd_f64(
-    dst: *mut f64,
-    n: usize,
-    shape: *const i64,
-    rank: usize,
-    dimension: usize,
-) {
-    let dst = unsafe { slice::from_raw_parts_mut(dst, n) };
-    let shape = unsafe { slice::from_raw_parts(shape, rank) };
-
-    let mut strides = vec![1usize; rank];
-    for i in (0..rank.saturating_sub(1)).rev() {
-        strides[i] = strides[i + 1] * shape[i + 1] as usize;
-    }
-
-    for flat in 0..n {
-        let coord = (flat / strides[dimension]) % shape[dimension] as usize;
-        dst[flat] = coord as f64;
     }
 }

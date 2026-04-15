@@ -35,6 +35,11 @@ type TensorVals = Vec<Value>;
 
 const MAX_REG_RETURNS: usize = 8;
 const LARGE_TENSOR_THRESHOLD: usize = 64;
+const F64_BYTES: usize = 8;
+const I32_BYTES: usize = 4;
+const SLOT_ALIGN: u8 = 3;
+const MIN_RETURN_SLOT: usize = 8;
+const LU_PIVOT_EPSILON: f64 = 1e-300;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FuncAbi {
@@ -373,453 +378,120 @@ fn declare_libm_functions(
 }
 
 // ---------------------------------------------------------------------------
-// Tensor runtime function IDs
+// Tensor runtime function IDs — generated from a single table via macro
 // ---------------------------------------------------------------------------
 
-#[allow(dead_code)]
-struct TensorRtIds {
-    add_f64: FuncId,
-    sub_f64: FuncId,
-    mul_f64: FuncId,
-    div_f64: FuncId,
-    max_f64: FuncId,
-    min_f64: FuncId,
-    pow_f64: FuncId,
-    rem_f64: FuncId,
-    neg_f64: FuncId,
-    sqrt_f64: FuncId,
-    abs_f64: FuncId,
-    floor_f64: FuncId,
-    sin_f64: FuncId,
-    cos_f64: FuncId,
-    exp_f64: FuncId,
-    log_f64: FuncId,
-    tanh_f64: FuncId,
-    sign_f64: FuncId,
-    tan_f64: FuncId,
-    transpose_nd_f64: FuncId,
-    cmp_eq_f64: FuncId,
-    cmp_lt_f64: FuncId,
-    cmp_le_f64: FuncId,
-    cmp_gt_f64: FuncId,
-    cmp_ge_f64: FuncId,
-    cmp_ne_f64: FuncId,
-    cmp_eq_i64: FuncId,
-    cmp_lt_i64: FuncId,
-    select_f64: FuncId,
-    select_i64: FuncId,
-    convert_i64_to_f64: FuncId,
-    convert_f64_to_i64: FuncId,
-    convert_i1_to_f64: FuncId,
-    broadcast_f64: FuncId,
-    broadcast_i64: FuncId,
-    broadcast_nd_f64: FuncId,
-    memcpy: FuncId,
-    transpose_f64: FuncId,
-    reduce_sum_f64: FuncId,
-    reduce_max_f64: FuncId,
-    reduce_min_f64: FuncId,
-    scatter_f64: FuncId,
-    gather_f64: FuncId,
-    gather_nd_f64: FuncId,
-    matmul_f64: FuncId,
-    slice_f64: FuncId,
-    pad_f64: FuncId,
-    concat_nd_f64: FuncId,
-    dynamic_slice_f64: FuncId,
-    dynamic_update_slice_f64: FuncId,
-    iota_nd_i64: FuncId,
-    iota_nd_f64: FuncId,
-    add_i64: FuncId,
-    sub_i64: FuncId,
-    mul_i64: FuncId,
-    widen_i32_to_i64: FuncId,
-    convert_i64_to_i32: FuncId,
-    select_i32: FuncId,
-    broadcast_i32: FuncId,
-    add_i32: FuncId,
-    sub_i32: FuncId,
-    div_i32: FuncId,
-    div_ui32: FuncId,
-    cmp_lt_i32: FuncId,
-    convert_f64_to_i32: FuncId,
-    convert_i1_to_i32: FuncId,
-    convert_i32_to_f64: FuncId,
-    convert_f64_to_f32: FuncId,
-    convert_f32_to_f64: FuncId,
+macro_rules! define_trt {
+    ($( $field:ident, $symbol:expr, $fn_path:path, [ $($param:expr),* ];)*) => {
+        #[allow(dead_code)]
+        struct TensorRtIds { $($field: FuncId,)* }
+
+        fn register_tensor_rt_symbols(jit_builder: &mut JITBuilder) {
+            $(jit_builder.symbol($symbol, $fn_path as *const u8);)*
+        }
+
+        fn declare_tensor_rt_functions(
+            jit_module: &mut JITModule,
+            call_conv: CallConv,
+        ) -> Result<TensorRtIds, String> {
+            fn decl(m: &mut JITModule, cc: CallConv, name: &str, params: &[Type]) -> Result<FuncId, String> {
+                let mut sig = m.make_signature();
+                sig.call_conv = cc;
+                for &t in params { sig.params.push(AbiParam::new(t)); }
+                m.declare_function(name, Linkage::Import, &sig)
+                    .map_err(|e| format!("declare trt {name}: {e}"))
+            }
+            Ok(TensorRtIds {
+                $($field: decl(jit_module, call_conv, $symbol, &[$($param),*])?,)*
+            })
+        }
+    };
 }
 
-fn register_tensor_rt_symbols(jit_builder: &mut JITBuilder) {
-    jit_builder.symbol("__trt_add_f64", tensor_rt::tensor_add_f64 as *const u8);
-    jit_builder.symbol("__trt_sub_f64", tensor_rt::tensor_sub_f64 as *const u8);
-    jit_builder.symbol("__trt_mul_f64", tensor_rt::tensor_mul_f64 as *const u8);
-    jit_builder.symbol("__trt_div_f64", tensor_rt::tensor_div_f64 as *const u8);
-    jit_builder.symbol("__trt_max_f64", tensor_rt::tensor_max_f64 as *const u8);
-    jit_builder.symbol("__trt_min_f64", tensor_rt::tensor_min_f64 as *const u8);
-    jit_builder.symbol("__trt_pow_f64", tensor_rt::tensor_pow_f64 as *const u8);
-    jit_builder.symbol("__trt_rem_f64", tensor_rt::tensor_rem_f64 as *const u8);
-    jit_builder.symbol("__trt_neg_f64", tensor_rt::tensor_neg_f64 as *const u8);
-    jit_builder.symbol("__trt_sqrt_f64", tensor_rt::tensor_sqrt_f64 as *const u8);
-    jit_builder.symbol("__trt_abs_f64", tensor_rt::tensor_abs_f64 as *const u8);
-    jit_builder.symbol("__trt_floor_f64", tensor_rt::tensor_floor_f64 as *const u8);
-    jit_builder.symbol("__trt_sin_f64", tensor_rt::tensor_sin_f64 as *const u8);
-    jit_builder.symbol("__trt_cos_f64", tensor_rt::tensor_cos_f64 as *const u8);
-    jit_builder.symbol("__trt_exp_f64", tensor_rt::tensor_exp_f64 as *const u8);
-    jit_builder.symbol("__trt_log_f64", tensor_rt::tensor_log_f64 as *const u8);
-    jit_builder.symbol("__trt_sign_f64", tensor_rt::tensor_sign_f64 as *const u8);
-    jit_builder.symbol("__trt_tan_f64", tensor_rt::tensor_tan_f64 as *const u8);
-    jit_builder.symbol(
-        "__trt_transpose_nd_f64",
-        tensor_rt::tensor_transpose_nd_f64 as *const u8,
-    );
-    jit_builder.symbol("__trt_tanh_f64", tensor_rt::tensor_tanh_f64 as *const u8);
-    jit_builder.symbol(
-        "__trt_cmp_eq_f64",
-        tensor_rt::tensor_cmp_eq_f64 as *const u8,
-    );
-    jit_builder.symbol(
-        "__trt_cmp_lt_f64",
-        tensor_rt::tensor_cmp_lt_f64 as *const u8,
-    );
-    jit_builder.symbol(
-        "__trt_cmp_le_f64",
-        tensor_rt::tensor_cmp_le_f64 as *const u8,
-    );
-    jit_builder.symbol(
-        "__trt_cmp_gt_f64",
-        tensor_rt::tensor_cmp_gt_f64 as *const u8,
-    );
-    jit_builder.symbol(
-        "__trt_cmp_ge_f64",
-        tensor_rt::tensor_cmp_ge_f64 as *const u8,
-    );
-    jit_builder.symbol(
-        "__trt_cmp_ne_f64",
-        tensor_rt::tensor_cmp_ne_f64 as *const u8,
-    );
-    jit_builder.symbol(
-        "__trt_cmp_eq_i64",
-        tensor_rt::tensor_cmp_eq_i64 as *const u8,
-    );
-    jit_builder.symbol(
-        "__trt_cmp_lt_i64",
-        tensor_rt::tensor_cmp_lt_i64 as *const u8,
-    );
-    jit_builder.symbol(
-        "__trt_select_f64",
-        tensor_rt::tensor_select_f64 as *const u8,
-    );
-    jit_builder.symbol(
-        "__trt_select_i64",
-        tensor_rt::tensor_select_i64 as *const u8,
-    );
-    jit_builder.symbol(
-        "__trt_cvt_i64_f64",
-        tensor_rt::tensor_convert_i64_to_f64 as *const u8,
-    );
-    jit_builder.symbol(
-        "__trt_cvt_f64_i64",
-        tensor_rt::tensor_convert_f64_to_i64 as *const u8,
-    );
-    jit_builder.symbol(
-        "__trt_cvt_i1_f64",
-        tensor_rt::tensor_convert_i1_to_f64 as *const u8,
-    );
-    jit_builder.symbol(
-        "__trt_bcast_f64",
-        tensor_rt::tensor_broadcast_f64 as *const u8,
-    );
-    jit_builder.symbol(
-        "__trt_bcast_i64",
-        tensor_rt::tensor_broadcast_i64 as *const u8,
-    );
-    jit_builder.symbol(
-        "__trt_bcast_nd_f64",
-        tensor_rt::tensor_broadcast_nd_f64 as *const u8,
-    );
-    jit_builder.symbol("__trt_memcpy", tensor_rt::tensor_memcpy as *const u8);
-    jit_builder.symbol(
-        "__trt_transpose_f64",
-        tensor_rt::tensor_transpose_f64 as *const u8,
-    );
-    jit_builder.symbol(
-        "__trt_reduce_sum_f64",
-        tensor_rt::tensor_reduce_sum_f64 as *const u8,
-    );
-    jit_builder.symbol(
-        "__trt_reduce_max_f64",
-        tensor_rt::tensor_reduce_max_f64 as *const u8,
-    );
-    jit_builder.symbol(
-        "__trt_reduce_min_f64",
-        tensor_rt::tensor_reduce_min_f64 as *const u8,
-    );
-    jit_builder.symbol(
-        "__trt_scatter_f64",
-        tensor_rt::tensor_scatter_f64 as *const u8,
-    );
-    jit_builder.symbol(
-        "__trt_gather_f64",
-        tensor_rt::tensor_gather_f64 as *const u8,
-    );
-    jit_builder.symbol(
-        "__trt_gather_nd_f64",
-        tensor_rt::tensor_gather_nd_f64 as *const u8,
-    );
-    jit_builder.symbol(
-        "__trt_matmul_f64",
-        tensor_rt::tensor_matmul_f64 as *const u8,
-    );
-    jit_builder.symbol("__trt_slice_f64", tensor_rt::tensor_slice_f64 as *const u8);
-    jit_builder.symbol("__trt_pad_f64", tensor_rt::tensor_pad_f64 as *const u8);
-    jit_builder.symbol(
-        "__trt_concat_nd_f64",
-        tensor_rt::tensor_concat_nd_f64 as *const u8,
-    );
-    jit_builder.symbol(
-        "__trt_dyn_slice_f64",
-        tensor_rt::tensor_dynamic_slice_f64 as *const u8,
-    );
-    jit_builder.symbol(
-        "__trt_dyn_upd_slice_f64",
-        tensor_rt::tensor_dynamic_update_slice_f64 as *const u8,
-    );
-    jit_builder.symbol(
-        "__trt_iota_nd_i64",
-        tensor_rt::tensor_iota_nd_i64 as *const u8,
-    );
-    jit_builder.symbol(
-        "__trt_iota_nd_f64",
-        tensor_rt::tensor_iota_nd_f64 as *const u8,
-    );
-    jit_builder.symbol("__trt_add_i64", tensor_rt::tensor_add_i64 as *const u8);
-    jit_builder.symbol("__trt_sub_i64", tensor_rt::tensor_sub_i64 as *const u8);
-    jit_builder.symbol("__trt_mul_i64", tensor_rt::tensor_mul_i64 as *const u8);
-    jit_builder.symbol(
-        "__trt_select_i32",
-        tensor_rt::tensor_select_i32 as *const u8,
-    );
-    jit_builder.symbol(
-        "__trt_bcast_i32",
-        tensor_rt::tensor_broadcast_i32 as *const u8,
-    );
-    jit_builder.symbol("__trt_add_i32", tensor_rt::tensor_add_i32 as *const u8);
-    jit_builder.symbol(
-        "__trt_widen_i32_i64",
-        tensor_rt::tensor_widen_i32_to_i64 as *const u8,
-    );
-    jit_builder.symbol(
-        "__trt_cvt_i64_i32",
-        tensor_rt::tensor_convert_i64_to_i32 as *const u8,
-    );
-    jit_builder.symbol("__trt_sub_i32", tensor_rt::tensor_sub_i32 as *const u8);
-    jit_builder.symbol("__trt_div_i32", tensor_rt::tensor_div_i32 as *const u8);
-    jit_builder.symbol("__trt_div_ui32", tensor_rt::tensor_div_ui32 as *const u8);
-    jit_builder.symbol(
-        "__trt_cmp_lt_i32",
-        tensor_rt::tensor_cmp_lt_i32 as *const u8,
-    );
-    jit_builder.symbol(
-        "__trt_cvt_f64_i32",
-        tensor_rt::tensor_convert_f64_to_i32 as *const u8,
-    );
-    jit_builder.symbol(
-        "__trt_cvt_i1_i32",
-        tensor_rt::tensor_convert_i1_to_i32 as *const u8,
-    );
-    jit_builder.symbol(
-        "__trt_cvt_i32_f64",
-        tensor_rt::tensor_convert_i32_to_f64 as *const u8,
-    );
-    jit_builder.symbol(
-        "__trt_cvt_f64_f32",
-        tensor_rt::tensor_convert_f64_to_f32 as *const u8,
-    );
-    jit_builder.symbol(
-        "__trt_cvt_f32_f64",
-        tensor_rt::tensor_convert_f32_to_f64 as *const u8,
-    );
-}
-
-fn declare_tensor_rt_functions(
-    jit_module: &mut JITModule,
-    call_conv: CallConv,
-) -> Result<TensorRtIds, String> {
-    let pt = ptr_type();
-    let i64t = types::I64;
-    let f64t = types::F64;
-    let decl =
-        |m: &mut JITModule, name: &str, params: &[Type], rets: &[Type]| -> Result<FuncId, String> {
-            let mut sig = m.make_signature();
-            sig.call_conv = call_conv;
-            for &t in params {
-                sig.params.push(AbiParam::new(t));
-            }
-            for &t in rets {
-                sig.returns.push(AbiParam::new(t));
-            }
-            m.declare_function(name, Linkage::Import, &sig)
-                .map_err(|e| format!("declare trt {name}: {e}"))
-        };
-    let binop = |m: &mut JITModule, n: &str| decl(m, n, &[pt, pt, pt, i64t], &[]);
-    let unop = |m: &mut JITModule, n: &str| decl(m, n, &[pt, pt, i64t], &[]);
-    let cmp = |m: &mut JITModule, n: &str| decl(m, n, &[pt, pt, pt, i64t], &[]);
-    Ok(TensorRtIds {
-        add_f64: binop(jit_module, "__trt_add_f64")?,
-        sub_f64: binop(jit_module, "__trt_sub_f64")?,
-        mul_f64: binop(jit_module, "__trt_mul_f64")?,
-        div_f64: binop(jit_module, "__trt_div_f64")?,
-        max_f64: binop(jit_module, "__trt_max_f64")?,
-        min_f64: binop(jit_module, "__trt_min_f64")?,
-        pow_f64: binop(jit_module, "__trt_pow_f64")?,
-        rem_f64: binop(jit_module, "__trt_rem_f64")?,
-        neg_f64: unop(jit_module, "__trt_neg_f64")?,
-        sqrt_f64: unop(jit_module, "__trt_sqrt_f64")?,
-        abs_f64: unop(jit_module, "__trt_abs_f64")?,
-        floor_f64: unop(jit_module, "__trt_floor_f64")?,
-        sin_f64: unop(jit_module, "__trt_sin_f64")?,
-        cos_f64: unop(jit_module, "__trt_cos_f64")?,
-        exp_f64: unop(jit_module, "__trt_exp_f64")?,
-        log_f64: unop(jit_module, "__trt_log_f64")?,
-        tanh_f64: unop(jit_module, "__trt_tanh_f64")?,
-        sign_f64: unop(jit_module, "__trt_sign_f64")?,
-        tan_f64: unop(jit_module, "__trt_tan_f64")?,
-        transpose_nd_f64: decl(
-            jit_module,
-            "__trt_transpose_nd_f64",
-            &[pt, pt, i64t, pt, pt, i64t],
-            &[],
-        )?,
-        cmp_eq_f64: cmp(jit_module, "__trt_cmp_eq_f64")?,
-        cmp_lt_f64: cmp(jit_module, "__trt_cmp_lt_f64")?,
-        cmp_le_f64: cmp(jit_module, "__trt_cmp_le_f64")?,
-        cmp_gt_f64: cmp(jit_module, "__trt_cmp_gt_f64")?,
-        cmp_ge_f64: cmp(jit_module, "__trt_cmp_ge_f64")?,
-        cmp_ne_f64: cmp(jit_module, "__trt_cmp_ne_f64")?,
-        cmp_eq_i64: cmp(jit_module, "__trt_cmp_eq_i64")?,
-        cmp_lt_i64: cmp(jit_module, "__trt_cmp_lt_i64")?,
-        select_f64: decl(jit_module, "__trt_select_f64", &[pt, pt, pt, pt, i64t], &[])?,
-        select_i64: decl(jit_module, "__trt_select_i64", &[pt, pt, pt, pt, i64t], &[])?,
-        convert_i64_to_f64: unop(jit_module, "__trt_cvt_i64_f64")?,
-        convert_f64_to_i64: unop(jit_module, "__trt_cvt_f64_i64")?,
-        convert_i1_to_f64: unop(jit_module, "__trt_cvt_i1_f64")?,
-        broadcast_f64: decl(jit_module, "__trt_bcast_f64", &[pt, f64t, i64t], &[])?,
-        broadcast_i64: decl(jit_module, "__trt_bcast_i64", &[pt, i64t, i64t], &[])?,
-        broadcast_nd_f64: decl(
-            jit_module,
-            "__trt_bcast_nd_f64",
-            &[pt, pt, i64t, i64t, pt, i64t, pt, i64t, pt],
-            &[],
-        )?,
-        memcpy: decl(jit_module, "__trt_memcpy", &[pt, pt, i64t], &[])?,
-        transpose_f64: decl(
-            jit_module,
-            "__trt_transpose_f64",
-            &[pt, pt, i64t, i64t],
-            &[],
-        )?,
-        reduce_sum_f64: decl(
-            jit_module,
-            "__trt_reduce_sum_f64",
-            &[pt, pt, i64t, i64t],
-            &[],
-        )?,
-        reduce_max_f64: decl(
-            jit_module,
-            "__trt_reduce_max_f64",
-            &[pt, pt, i64t, i64t],
-            &[],
-        )?,
-        reduce_min_f64: decl(
-            jit_module,
-            "__trt_reduce_min_f64",
-            &[pt, pt, i64t, i64t],
-            &[],
-        )?,
-        scatter_f64: decl(
-            jit_module,
-            "__trt_scatter_f64",
-            &[pt, pt, i64t, pt, pt, i64t, i64t],
-            &[],
-        )?,
-        gather_f64: decl(
-            jit_module,
-            "__trt_gather_f64",
-            &[pt, pt, i64t, pt, i64t, i64t],
-            &[],
-        )?,
-        gather_nd_f64: decl(
-            jit_module,
-            "__trt_gather_nd_f64",
-            &[pt, pt, i64t, pt, i64t, i64t, pt, i64t, pt, pt, i64t],
-            &[],
-        )?,
-        matmul_f64: decl(
-            jit_module,
-            "__trt_matmul_f64",
-            &[pt, pt, pt, i64t, i64t, i64t],
-            &[],
-        )?,
-        slice_f64: decl(
-            jit_module,
-            "__trt_slice_f64",
-            &[pt, pt, i64t, i64t, pt, i64t, pt, pt],
-            &[],
-        )?,
-        pad_f64: decl(
-            jit_module,
-            "__trt_pad_f64",
-            &[pt, pt, i64t, i64t, f64t, pt, pt, i64t, pt],
-            &[],
-        )?,
-        concat_nd_f64: decl(
-            jit_module,
-            "__trt_concat_nd_f64",
-            &[pt, i64t, pt, i64t, pt, i64t, pt, pt, i64t, i64t, i64t],
-            &[],
-        )?,
-        dynamic_slice_f64: decl(
-            jit_module,
-            "__trt_dyn_slice_f64",
-            &[pt, pt, i64t, i64t, pt, i64t, pt, pt],
-            &[],
-        )?,
-        dynamic_update_slice_f64: decl(
-            jit_module,
-            "__trt_dyn_upd_slice_f64",
-            &[pt, pt, pt, i64t, i64t, pt, i64t, pt, pt],
-            &[],
-        )?,
-        iota_nd_i64: decl(
-            jit_module,
-            "__trt_iota_nd_i64",
-            &[pt, i64t, pt, i64t, i64t],
-            &[],
-        )?,
-        iota_nd_f64: decl(
-            jit_module,
-            "__trt_iota_nd_f64",
-            &[pt, i64t, pt, i64t, i64t],
-            &[],
-        )?,
-        add_i64: binop(jit_module, "__trt_add_i64")?,
-        sub_i64: binop(jit_module, "__trt_sub_i64")?,
-        mul_i64: binop(jit_module, "__trt_mul_i64")?,
-        widen_i32_to_i64: unop(jit_module, "__trt_widen_i32_i64")?,
-        convert_i64_to_i32: unop(jit_module, "__trt_cvt_i64_i32")?,
-        select_i32: decl(jit_module, "__trt_select_i32", &[pt, pt, pt, pt, i64t], &[])?,
-        broadcast_i32: decl(jit_module, "__trt_bcast_i32", &[pt, types::I32, i64t], &[])?,
-        add_i32: binop(jit_module, "__trt_add_i32")?,
-        sub_i32: binop(jit_module, "__trt_sub_i32")?,
-        div_i32: binop(jit_module, "__trt_div_i32")?,
-        div_ui32: binop(jit_module, "__trt_div_ui32")?,
-        cmp_lt_i32: cmp(jit_module, "__trt_cmp_lt_i32")?,
-        convert_f64_to_i32: unop(jit_module, "__trt_cvt_f64_i32")?,
-        convert_i1_to_i32: unop(jit_module, "__trt_cvt_i1_i32")?,
-        convert_i32_to_f64: unop(jit_module, "__trt_cvt_i32_f64")?,
-        convert_f64_to_f32: unop(jit_module, "__trt_cvt_f64_f32")?,
-        convert_f32_to_f64: unop(jit_module, "__trt_cvt_f32_f64")?,
-    })
+define_trt! {
+    // f64 binary elementwise: fn(dst, a, b, n)
+    add_f64,  "__trt_add_f64",  tensor_rt::tensor_add_f64,  [ptr_type(), ptr_type(), ptr_type(), types::I64];
+    sub_f64,  "__trt_sub_f64",  tensor_rt::tensor_sub_f64,  [ptr_type(), ptr_type(), ptr_type(), types::I64];
+    mul_f64,  "__trt_mul_f64",  tensor_rt::tensor_mul_f64,  [ptr_type(), ptr_type(), ptr_type(), types::I64];
+    div_f64,  "__trt_div_f64",  tensor_rt::tensor_div_f64,  [ptr_type(), ptr_type(), ptr_type(), types::I64];
+    max_f64,  "__trt_max_f64",  tensor_rt::tensor_max_f64,  [ptr_type(), ptr_type(), ptr_type(), types::I64];
+    min_f64,  "__trt_min_f64",  tensor_rt::tensor_min_f64,  [ptr_type(), ptr_type(), ptr_type(), types::I64];
+    pow_f64,  "__trt_pow_f64",  tensor_rt::tensor_pow_f64,  [ptr_type(), ptr_type(), ptr_type(), types::I64];
+    rem_f64,  "__trt_rem_f64",  tensor_rt::tensor_rem_f64,  [ptr_type(), ptr_type(), ptr_type(), types::I64];
+    // f64 unary elementwise: fn(dst, src, n)
+    neg_f64,   "__trt_neg_f64",   tensor_rt::tensor_neg_f64,   [ptr_type(), ptr_type(), types::I64];
+    sqrt_f64,  "__trt_sqrt_f64",  tensor_rt::tensor_sqrt_f64,  [ptr_type(), ptr_type(), types::I64];
+    abs_f64,   "__trt_abs_f64",   tensor_rt::tensor_abs_f64,   [ptr_type(), ptr_type(), types::I64];
+    floor_f64, "__trt_floor_f64", tensor_rt::tensor_floor_f64, [ptr_type(), ptr_type(), types::I64];
+    sin_f64,   "__trt_sin_f64",   tensor_rt::tensor_sin_f64,   [ptr_type(), ptr_type(), types::I64];
+    cos_f64,   "__trt_cos_f64",   tensor_rt::tensor_cos_f64,   [ptr_type(), ptr_type(), types::I64];
+    exp_f64,   "__trt_exp_f64",   tensor_rt::tensor_exp_f64,   [ptr_type(), ptr_type(), types::I64];
+    log_f64,   "__trt_log_f64",   tensor_rt::tensor_log_f64,   [ptr_type(), ptr_type(), types::I64];
+    tanh_f64,  "__trt_tanh_f64",  tensor_rt::tensor_tanh_f64,  [ptr_type(), ptr_type(), types::I64];
+    sign_f64,  "__trt_sign_f64",  tensor_rt::tensor_sign_f64,  [ptr_type(), ptr_type(), types::I64];
+    tan_f64,   "__trt_tan_f64",   tensor_rt::tensor_tan_f64,   [ptr_type(), ptr_type(), types::I64];
+    // comparison: fn(dst_u8, a, b, n)
+    cmp_eq_f64, "__trt_cmp_eq_f64", tensor_rt::tensor_cmp_eq_f64, [ptr_type(), ptr_type(), ptr_type(), types::I64];
+    cmp_lt_f64, "__trt_cmp_lt_f64", tensor_rt::tensor_cmp_lt_f64, [ptr_type(), ptr_type(), ptr_type(), types::I64];
+    cmp_le_f64, "__trt_cmp_le_f64", tensor_rt::tensor_cmp_le_f64, [ptr_type(), ptr_type(), ptr_type(), types::I64];
+    cmp_gt_f64, "__trt_cmp_gt_f64", tensor_rt::tensor_cmp_gt_f64, [ptr_type(), ptr_type(), ptr_type(), types::I64];
+    cmp_ge_f64, "__trt_cmp_ge_f64", tensor_rt::tensor_cmp_ge_f64, [ptr_type(), ptr_type(), ptr_type(), types::I64];
+    cmp_ne_f64, "__trt_cmp_ne_f64", tensor_rt::tensor_cmp_ne_f64, [ptr_type(), ptr_type(), ptr_type(), types::I64];
+    cmp_eq_i64, "__trt_cmp_eq_i64", tensor_rt::tensor_cmp_eq_i64, [ptr_type(), ptr_type(), ptr_type(), types::I64];
+    cmp_lt_i64, "__trt_cmp_lt_i64", tensor_rt::tensor_cmp_lt_i64, [ptr_type(), ptr_type(), ptr_type(), types::I64];
+    cmp_lt_i32, "__trt_cmp_lt_i32", tensor_rt::tensor_cmp_lt_i32, [ptr_type(), ptr_type(), ptr_type(), types::I64];
+    // select: fn(dst, cond, on_true, on_false, n)
+    select_f64, "__trt_select_f64", tensor_rt::tensor_select_f64, [ptr_type(), ptr_type(), ptr_type(), ptr_type(), types::I64];
+    select_i64, "__trt_select_i64", tensor_rt::tensor_select_i64, [ptr_type(), ptr_type(), ptr_type(), ptr_type(), types::I64];
+    select_i32, "__trt_select_i32", tensor_rt::tensor_select_i32, [ptr_type(), ptr_type(), ptr_type(), ptr_type(), types::I64];
+    // conversion: fn(dst, src, n)
+    convert_i64_to_f64, "__trt_cvt_i64_f64", tensor_rt::tensor_convert_i64_to_f64, [ptr_type(), ptr_type(), types::I64];
+    convert_f64_to_i64, "__trt_cvt_f64_i64", tensor_rt::tensor_convert_f64_to_i64, [ptr_type(), ptr_type(), types::I64];
+    convert_i1_to_f64,  "__trt_cvt_i1_f64",  tensor_rt::tensor_convert_i1_to_f64,  [ptr_type(), ptr_type(), types::I64];
+    convert_f64_to_i32, "__trt_cvt_f64_i32",  tensor_rt::tensor_convert_f64_to_i32, [ptr_type(), ptr_type(), types::I64];
+    convert_i1_to_i32,  "__trt_cvt_i1_i32",   tensor_rt::tensor_convert_i1_to_i32,  [ptr_type(), ptr_type(), types::I64];
+    convert_i64_to_i32, "__trt_cvt_i64_i32",  tensor_rt::tensor_convert_i64_to_i32, [ptr_type(), ptr_type(), types::I64];
+    convert_i32_to_f64, "__trt_cvt_i32_f64",  tensor_rt::tensor_convert_i32_to_f64, [ptr_type(), ptr_type(), types::I64];
+    convert_f64_to_f32, "__trt_cvt_f64_f32",  tensor_rt::tensor_convert_f64_to_f32, [ptr_type(), ptr_type(), types::I64];
+    convert_f32_to_f64, "__trt_cvt_f32_f64",  tensor_rt::tensor_convert_f32_to_f64, [ptr_type(), ptr_type(), types::I64];
+    widen_i32_to_i64,   "__trt_widen_i32_i64", tensor_rt::tensor_widen_i32_to_i64,  [ptr_type(), ptr_type(), types::I64];
+    // broadcast: fn(dst, val, n)
+    broadcast_f64, "__trt_bcast_f64", tensor_rt::tensor_broadcast_f64, [ptr_type(), types::F64, types::I64];
+    broadcast_i64, "__trt_bcast_i64", tensor_rt::tensor_broadcast_i64, [ptr_type(), types::I64, types::I64];
+    broadcast_i32, "__trt_bcast_i32", tensor_rt::tensor_broadcast_i32, [ptr_type(), types::I32, types::I64];
+    // i64 binary elementwise
+    add_i64, "__trt_add_i64", tensor_rt::tensor_add_i64, [ptr_type(), ptr_type(), ptr_type(), types::I64];
+    sub_i64, "__trt_sub_i64", tensor_rt::tensor_sub_i64, [ptr_type(), ptr_type(), ptr_type(), types::I64];
+    mul_i64, "__trt_mul_i64", tensor_rt::tensor_mul_i64, [ptr_type(), ptr_type(), ptr_type(), types::I64];
+    // i32 binary elementwise
+    add_i32,  "__trt_add_i32",  tensor_rt::tensor_add_i32,  [ptr_type(), ptr_type(), ptr_type(), types::I64];
+    sub_i32,  "__trt_sub_i32",  tensor_rt::tensor_sub_i32,  [ptr_type(), ptr_type(), ptr_type(), types::I64];
+    div_i32,  "__trt_div_i32",  tensor_rt::tensor_div_i32,  [ptr_type(), ptr_type(), ptr_type(), types::I64];
+    div_ui32, "__trt_div_ui32", tensor_rt::tensor_div_ui32, [ptr_type(), ptr_type(), ptr_type(), types::I64];
+    // memory
+    memcpy, "__trt_memcpy", tensor_rt::tensor_memcpy, [ptr_type(), ptr_type(), types::I64];
+    // layout / shape
+    transpose_f64,    "__trt_transpose_f64",    tensor_rt::tensor_transpose_f64,    [ptr_type(), ptr_type(), types::I64, types::I64];
+    transpose_nd_f64, "__trt_transpose_nd_f64", tensor_rt::tensor_transpose_nd_f64, [ptr_type(), ptr_type(), types::I64, ptr_type(), ptr_type(), types::I64];
+    broadcast_nd_f64, "__trt_bcast_nd_f64",     tensor_rt::tensor_broadcast_nd_f64, [ptr_type(), ptr_type(), types::I64, types::I64, ptr_type(), types::I64, ptr_type(), types::I64, ptr_type()];
+    slice_f64,        "__trt_slice_f64",        tensor_rt::tensor_slice_f64,        [ptr_type(), ptr_type(), types::I64, types::I64, ptr_type(), types::I64, ptr_type(), ptr_type()];
+    concat_nd_f64,    "__trt_concat_nd_f64",    tensor_rt::tensor_concat_nd_f64,    [ptr_type(), types::I64, ptr_type(), types::I64, ptr_type(), types::I64, ptr_type(), ptr_type(), types::I64, types::I64, types::I64];
+    pad_f64,          "__trt_pad_f64",          tensor_rt::tensor_pad_f64,          [ptr_type(), ptr_type(), types::I64, types::I64, types::F64, ptr_type(), ptr_type(), types::I64, ptr_type()];
+    // reduce
+    reduce_sum_f64, "__trt_reduce_sum_f64", tensor_rt::tensor_reduce_sum_f64, [ptr_type(), ptr_type(), types::I64, types::I64];
+    reduce_max_f64, "__trt_reduce_max_f64", tensor_rt::tensor_reduce_max_f64, [ptr_type(), ptr_type(), types::I64, types::I64];
+    reduce_min_f64, "__trt_reduce_min_f64", tensor_rt::tensor_reduce_min_f64, [ptr_type(), ptr_type(), types::I64, types::I64];
+    // indexing
+    scatter_f64,   "__trt_scatter_f64",   tensor_rt::tensor_scatter_f64,   [ptr_type(), ptr_type(), types::I64, ptr_type(), ptr_type(), types::I64, types::I64];
+    gather_f64,    "__trt_gather_f64",    tensor_rt::tensor_gather_f64,    [ptr_type(), ptr_type(), types::I64, ptr_type(), types::I64, types::I64];
+    gather_nd_f64, "__trt_gather_nd_f64", tensor_rt::tensor_gather_nd_f64, [ptr_type(), ptr_type(), types::I64, ptr_type(), types::I64, types::I64, ptr_type(), types::I64, ptr_type(), ptr_type(), types::I64];
+    matmul_f64,    "__trt_matmul_f64",    tensor_rt::tensor_matmul_f64,    [ptr_type(), ptr_type(), ptr_type(), types::I64, types::I64, types::I64];
+    // dynamic slice
+    dynamic_slice_f64,        "__trt_dyn_slice_f64",     tensor_rt::tensor_dynamic_slice_f64,        [ptr_type(), ptr_type(), types::I64, types::I64, ptr_type(), types::I64, ptr_type(), ptr_type()];
+    dynamic_update_slice_f64, "__trt_dyn_upd_slice_f64", tensor_rt::tensor_dynamic_update_slice_f64, [ptr_type(), ptr_type(), ptr_type(), types::I64, types::I64, ptr_type(), types::I64, ptr_type(), ptr_type()];
+    // iota
+    iota_nd_i64, "__trt_iota_nd_i64", tensor_rt::tensor_iota_nd_i64, [ptr_type(), types::I64, ptr_type(), types::I64, types::I64];
+    iota_nd_f64, "__trt_iota_nd_f64", tensor_rt::tensor_iota_nd_f64, [ptr_type(), types::I64, ptr_type(), types::I64, types::I64];
 }
 
 // ---------------------------------------------------------------------------
@@ -1157,7 +829,7 @@ fn alloc_slot(builder: &mut FunctionBuilder, byte_size: usize) -> Value {
     let ss = builder.create_sized_stack_slot(StackSlotData::new(
         StackSlotKind::ExplicitSlot,
         byte_size as u32,
-        3,
+        SLOT_ALIGN,
     ));
     builder.ins().stack_addr(ptr_type(), ss, 0)
 }
@@ -2274,7 +1946,7 @@ fn lower_instruction_mem(
                 let ss = builder.create_sized_stack_slot(StackSlotData::new(
                     StackSlotKind::ExplicitSlot,
                     byte_sz as u32,
-                    3,
+                    SLOT_ALIGN,
                 ));
                 let addr = builder.ins().stack_addr(ptr_type(), ss, 0);
                 let memcpy_ref = jit_module.declare_func_in_func(trt_ids.memcpy, builder.func);
@@ -2414,7 +2086,7 @@ fn lower_instruction_mem(
                 let mut call_args: Vec<Value> = args.iter().map(get).collect::<Result<_, _>>()?;
                 let total_ret_bytes: usize =
                     callee_def.result_types.iter().map(|t| t.byte_size()).sum();
-                let ret_buf = alloc_slot(builder, total_ret_bytes.max(8));
+                let ret_buf = alloc_slot(builder, total_ret_bytes.max(MIN_RETURN_SLOT));
                 call_args.push(ret_buf);
                 builder.ins().call(func_ref, &call_args);
 
@@ -2507,17 +2179,6 @@ fn lower_instruction_mem(
                 jit_module,
                 trt_ids.sign_f64,
                 &[dst, get(operand)?, n_val],
-            );
-            Ok(vec![vec![dst]])
-        }
-        Instruction::Remainder { lhs, rhs } if is_float(rt.element_type) => {
-            let dst = alloc_slot(builder, n * elem_sz);
-            let n_val = builder.ins().iconst(types::I64, n as i64);
-            trt_call(
-                builder,
-                jit_module,
-                trt_ids.rem_f64,
-                &[dst, get(lhs)?, get(rhs)?, n_val],
             );
             Ok(vec![vec![dst]])
         }
@@ -3538,7 +3199,7 @@ fn lower_instruction(
             let ss = builder.create_sized_stack_slot(StackSlotData::new(
                 StackSlotKind::ExplicitSlot,
                 total_bytes as u32,
-                3,
+                SLOT_ALIGN,
             ));
             let base = builder.ins().stack_addr(ptr_type(), ss, 0);
             for (i, &v) in vals.iter().enumerate() {
@@ -3927,7 +3588,7 @@ fn lower_call(
             let ss = builder.create_sized_stack_slot(StackSlotData::new(
                 StackSlotKind::ExplicitSlot,
                 byte_sz as u32,
-                3,
+                SLOT_ALIGN,
             ));
             let addr = builder.ins().stack_addr(ptr_type(), ss, 0);
             let elem_sz = param_ty.element_type.byte_size();
@@ -3942,8 +3603,8 @@ fn lower_call(
         let total_ret_bytes: usize = callee_def.result_types.iter().map(|t| t.byte_size()).sum();
         let ret_ss = builder.create_sized_stack_slot(StackSlotData::new(
             StackSlotKind::ExplicitSlot,
-            total_ret_bytes.max(8) as u32,
-            3,
+            total_ret_bytes.max(MIN_RETURN_SLOT) as u32,
+            SLOT_ALIGN,
         ));
         let ret_addr = builder.ins().stack_addr(ptr_type(), ret_ss, 0);
         call_args.push(ret_addr);
@@ -3985,7 +3646,7 @@ fn lower_call(
         let ss = builder.create_sized_stack_slot(StackSlotData::new(
             StackSlotKind::ExplicitSlot,
             total_bytes as u32,
-            3,
+            SLOT_ALIGN,
         ));
         let ss_addr = builder.ins().stack_addr(ptr_type(), ss, 0);
         call_args.push(ss_addr);
@@ -4617,7 +4278,7 @@ fn lower_gather(
     let ss = builder.create_sized_stack_slot(StackSlotData::new(
         StackSlotKind::ExplicitSlot,
         total_bytes as u32,
-        3,
+        SLOT_ALIGN,
     ));
     let base = builder.ins().stack_addr(ptr_type(), ss, 0);
     for (i, &v) in operand.iter().enumerate() {
@@ -4823,7 +4484,7 @@ fn lower_dynamic_slice(
     let ss = builder.create_sized_stack_slot(StackSlotData::new(
         StackSlotKind::ExplicitSlot,
         total_bytes as u32,
-        3,
+        SLOT_ALIGN,
     ));
     let base = builder.ins().stack_addr(ptr_type(), ss, 0);
     for (i, &v) in vals.iter().enumerate() {
@@ -4896,7 +4557,7 @@ fn lower_dynamic_update_slice(
     let ss = builder.create_sized_stack_slot(StackSlotData::new(
         StackSlotKind::ExplicitSlot,
         total_bytes as u32,
-        3,
+        SLOT_ALIGN,
     ));
     let base_addr = builder.ins().stack_addr(ptr_type(), ss, 0);
     for (i, &v) in base_vals.iter().enumerate() {
@@ -5148,7 +4809,7 @@ extern "C" fn cranelift_lu(
         }
 
         let pivot = mat[idx(k, k)];
-        if pivot.abs() < 1e-300 {
+        if pivot.abs() < LU_PIVOT_EPSILON {
             continue;
         }
 
@@ -5438,6 +5099,57 @@ fn load_i32_vals(
         .collect()
 }
 
+fn require_square(name: &str, vals: &[cranelift_codegen::ir::Value]) -> Result<usize, String> {
+    let n = (vals.len() as f64).sqrt() as usize;
+    if n * n != vals.len() {
+        return Err(format!("{name}: non-square matrix ({} elements)", vals.len()));
+    }
+    Ok(n)
+}
+
+fn lapack_slot(
+    builder: &mut FunctionBuilder,
+    total_bytes: usize,
+) -> (cranelift_codegen::ir::StackSlot, cranelift_codegen::ir::Value) {
+    let ss = builder.create_sized_stack_slot(StackSlotData::new(
+        StackSlotKind::ExplicitSlot,
+        total_bytes as u32,
+        SLOT_ALIGN,
+    ));
+    let base = builder.ins().stack_addr(ptr_type(), ss, 0);
+    (ss, base)
+}
+
+fn lapack_call(
+    builder: &mut FunctionBuilder,
+    jit_module: &mut JITModule,
+    symbol: &str,
+    param_types: &[cranelift_codegen::ir::Type],
+    args: &[cranelift_codegen::ir::Value],
+) -> Result<(), String> {
+    let mut sig = jit_module.make_signature();
+    sig.call_conv = jit_module.isa().default_call_conv();
+    for &ty in param_types {
+        sig.params.push(AbiParam::new(ty));
+    }
+    let func_id = jit_module
+        .declare_function(symbol, Linkage::Import, &sig)
+        .map_err(|e| format!("declare {symbol}: {e}"))?;
+    let func_ref = jit_module.declare_func_in_func(func_id, builder.func);
+    builder.ins().call(func_ref, args);
+    Ok(())
+}
+
+fn load_info_i32(
+    builder: &mut FunctionBuilder,
+    base: cranelift_codegen::ir::Value,
+    offset: i32,
+) -> cranelift_codegen::ir::Value {
+    builder
+        .ins()
+        .load(types::I32, MemFlags::trusted(), base, offset)
+}
+
 fn lower_svd_custom_call(
     builder: &mut FunctionBuilder,
     operands: &[ValueId],
@@ -5447,143 +5159,78 @@ fn lower_svd_custom_call(
     jit_module: &mut JITModule,
 ) -> Result<Vec<TensorVals>, String> {
     let a_vals = get_vals(value_map, &operands[0])?;
-    let n = (a_vals.len() as f64).sqrt() as usize;
-    if n * n != a_vals.len() {
-        return Err(format!(
-            "SVD: non-square matrix ({} elements)",
-            a_vals.len()
-        ));
-    }
+    let n = require_square("SVD", a_vals)?;
+    let f8 = 8;
 
-    let a_bytes = n * n * 8;
-    let u_bytes = n * n * 8;
-    let s_bytes = n * 8;
-    let vt_bytes = n * n * 8;
-    let info_bytes = 4;
-    let total = a_bytes + u_bytes + s_bytes + vt_bytes + info_bytes;
-
-    let ss = builder.create_sized_stack_slot(StackSlotData::new(
-        StackSlotKind::ExplicitSlot,
-        total as u32,
-        3,
-    ));
-    let base = builder.ins().stack_addr(ptr_type(), ss, 0);
-
+    let (a_b, u_b, s_b, vt_b, info_b) = (n * n * f8, n * n * f8, n * f8, n * n * f8, 4);
+    let (_, base) = lapack_slot(builder, a_b + u_b + s_b + vt_b + info_b);
     store_f64_vals(builder, a_vals, base, 0);
 
-    let u_off = a_bytes as i32;
-    let s_off = (a_bytes + u_bytes) as i32;
-    let vt_off = (a_bytes + u_bytes + s_bytes) as i32;
-    let info_off = (a_bytes + u_bytes + s_bytes + vt_bytes) as i32;
-
+    let u_off = a_b as i32;
+    let s_off = (a_b + u_b) as i32;
+    let vt_off = (a_b + u_b + s_b) as i32;
+    let info_off = (a_b + u_b + s_b + vt_b) as i32;
     let u_ptr = builder.ins().iadd_imm(base, u_off as i64);
     let s_ptr = builder.ins().iadd_imm(base, s_off as i64);
     let vt_ptr = builder.ins().iadd_imm(base, vt_off as i64);
     let info_ptr = builder.ins().iadd_imm(base, info_off as i64);
 
-    // fn(a_ptr, n, u_ptr, s_ptr, vt_ptr, info_ptr)
-    let mut sig = jit_module.make_signature();
-    sig.call_conv = jit_module.isa().default_call_conv();
-    sig.params.push(AbiParam::new(ptr_type()));
-    sig.params.push(AbiParam::new(types::I64));
-    for _ in 0..4 {
-        sig.params.push(AbiParam::new(ptr_type()));
-    }
-    let func_id = jit_module
-        .declare_function("__cranelift_svd", Linkage::Import, &sig)
-        .map_err(|e| format!("declare svd: {e}"))?;
-    let func_ref = jit_module.declare_func_in_func(func_id, builder.func);
-
     let n_val = builder.ins().iconst(types::I64, n as i64);
-    builder
-        .ins()
-        .call(func_ref, &[base, n_val, u_ptr, s_ptr, vt_ptr, info_ptr]);
+    let pt = ptr_type();
+    lapack_call(builder, jit_module, "__cranelift_svd",
+        &[pt, types::I64, pt, pt, pt, pt],
+        &[base, n_val, u_ptr, s_ptr, vt_ptr, info_ptr])?;
 
     // XLA dgesdd_ffi convention: (A_overwritten, sigma, U, VT, info)
-    // With JOBZ='S', A is overwritten with U columns, so result[0] = U.
-    let mut result_groups = Vec::new();
-    result_groups.push(load_f64_vals(builder, n * n, base, u_off)); // [0] A overwritten = U
-    result_groups.push(load_f64_vals(builder, n, base, s_off)); // [1] sigma
-    result_groups.push(load_f64_vals(builder, n * n, base, u_off)); // [2] U
+    let mut result_groups = vec![
+        load_f64_vals(builder, n * n, base, u_off),
+        load_f64_vals(builder, n, base, s_off),
+        load_f64_vals(builder, n * n, base, u_off),
+    ];
     if result_types.len() > 3 {
-        result_groups.push(load_f64_vals(builder, n * n, base, vt_off)); // [3] VT
+        result_groups.push(load_f64_vals(builder, n * n, base, vt_off));
     }
     if result_types.len() > 4 {
-        let info_val = builder
-            .ins()
-            .load(types::I32, MemFlags::trusted(), base, info_off);
-        result_groups.push(vec![info_val]); // [4] info
+        result_groups.push(vec![load_info_i32(builder, base, info_off)]);
     }
-
     Ok(result_groups)
 }
 
 fn lower_lu_custom_call(
     builder: &mut FunctionBuilder,
     operands: &[ValueId],
-    result_types: &[TensorType],
+    _result_types: &[TensorType],
     value_map: &HashMap<ValueId, TensorVals>,
     _type_map: &HashMap<ValueId, TensorType>,
     jit_module: &mut JITModule,
 ) -> Result<Vec<TensorVals>, String> {
     let a_vals = get_vals(value_map, &operands[0])?;
-    let n = (a_vals.len() as f64).sqrt() as usize;
-    if n * n != a_vals.len() {
-        return Err(format!("LU: non-square matrix ({} elements)", a_vals.len()));
-    }
-    let m = n;
+    let n = require_square("LU", a_vals)?;
+    let (m, f8) = (n, 8);
 
-    let lu_bytes = m * n * 8;
-    let ipiv_bytes = m.min(n) * 4;
-    let info_bytes = 4;
-    let total = lu_bytes + lu_bytes + ipiv_bytes + info_bytes;
-
-    let ss = builder.create_sized_stack_slot(StackSlotData::new(
-        StackSlotKind::ExplicitSlot,
-        total as u32,
-        3,
-    ));
-    let base = builder.ins().stack_addr(ptr_type(), ss, 0);
-
+    let (lu_b, ipiv_b, info_b) = (m * n * f8, m.min(n) * 4, 4);
+    let (_, base) = lapack_slot(builder, lu_b + lu_b + ipiv_b + info_b);
     store_f64_vals(builder, a_vals, base, 0);
 
-    let lu_off = lu_bytes as i32;
-    let ipiv_off = (lu_bytes + lu_bytes) as i32;
-    let info_off = (lu_bytes + lu_bytes + ipiv_bytes) as i32;
-
+    let lu_off = lu_b as i32;
+    let ipiv_off = (lu_b + lu_b) as i32;
+    let info_off = (lu_b + lu_b + ipiv_b) as i32;
     let lu_ptr = builder.ins().iadd_imm(base, lu_off as i64);
     let ipiv_ptr = builder.ins().iadd_imm(base, ipiv_off as i64);
     let info_ptr = builder.ins().iadd_imm(base, info_off as i64);
 
-    // fn(a_ptr, m, n, lu_ptr, ipiv_ptr, info_ptr) = 1 ptr + 2 i64 + 3 ptr
-    let mut sig = jit_module.make_signature();
-    sig.call_conv = jit_module.isa().default_call_conv();
-    sig.params.push(AbiParam::new(ptr_type()));
-    sig.params.push(AbiParam::new(types::I64));
-    sig.params.push(AbiParam::new(types::I64));
-    sig.params.push(AbiParam::new(ptr_type()));
-    sig.params.push(AbiParam::new(ptr_type()));
-    sig.params.push(AbiParam::new(ptr_type()));
-    let func_id = jit_module
-        .declare_function("__cranelift_lu", Linkage::Import, &sig)
-        .map_err(|e| format!("declare lu: {e}"))?;
-    let func_ref = jit_module.declare_func_in_func(func_id, builder.func);
-
     let m_val = builder.ins().iconst(types::I64, m as i64);
     let n_val = builder.ins().iconst(types::I64, n as i64);
-    builder
-        .ins()
-        .call(func_ref, &[base, m_val, n_val, lu_ptr, ipiv_ptr, info_ptr]);
+    let pt = ptr_type();
+    lapack_call(builder, jit_module, "__cranelift_lu",
+        &[pt, types::I64, types::I64, pt, pt, pt],
+        &[base, m_val, n_val, lu_ptr, ipiv_ptr, info_ptr])?;
 
-    let mut result_groups = Vec::new();
-    result_groups.push(load_f64_vals(builder, m * n, base, lu_off));
-    result_groups.push(load_i32_vals(builder, m.min(n), base, ipiv_off));
-    let info_val = builder
-        .ins()
-        .load(types::I32, MemFlags::trusted(), base, info_off);
-    result_groups.push(vec![info_val]);
-
-    Ok(result_groups)
+    Ok(vec![
+        load_f64_vals(builder, m * n, base, lu_off),
+        load_i32_vals(builder, m.min(n), base, ipiv_off),
+        vec![load_info_i32(builder, base, info_off)],
+    ])
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -5606,58 +5253,28 @@ fn lower_trsm_custom_call(
         return Err("TRSM: expected 2D result".to_string());
     };
     let n = (a_vals.len() as f64).sqrt() as usize;
+    let f8 = 8;
 
-    let a_bytes = a_vals.len() * 8;
-    let b_bytes = b_vals.len() * 8;
-    let out_bytes = m * nrhs * 8;
-    let total = a_bytes + b_bytes + out_bytes;
-
-    let ss = builder.create_sized_stack_slot(StackSlotData::new(
-        StackSlotKind::ExplicitSlot,
-        total as u32,
-        3,
-    ));
-    let base = builder.ins().stack_addr(ptr_type(), ss, 0);
-
+    let (a_b, b_b, out_b) = (a_vals.len() * f8, b_vals.len() * f8, m * nrhs * f8);
+    let (_, base) = lapack_slot(builder, a_b + b_b + out_b);
     store_f64_vals(builder, a_vals, base, 0);
-    let b_off = a_bytes as i32;
+    let b_off = a_b as i32;
     store_f64_vals(builder, b_vals, base, b_off);
-    let out_off = (a_bytes + b_bytes) as i32;
+    let out_off = (a_b + b_b) as i32;
     let b_ptr = builder.ins().iadd_imm(base, b_off as i64);
     let out_ptr = builder.ins().iadd_imm(base, out_off as i64);
 
     let uplo = *backend_config.get("uplo").unwrap_or(&(b'L' as i64)) as u8;
     let diag = *backend_config.get("diag").unwrap_or(&(b'N' as i64)) as u8;
-
-    // fn(a_ptr, b_ptr, m, n, nrhs, uplo, diag, out_ptr)
-    let mut sig = jit_module.make_signature();
-    sig.call_conv = jit_module.isa().default_call_conv();
-    for _ in 0..2 {
-        sig.params.push(AbiParam::new(ptr_type()));
-    }
-    for _ in 0..3 {
-        sig.params.push(AbiParam::new(types::I64));
-    }
-    for _ in 0..2 {
-        sig.params.push(AbiParam::new(types::I8));
-    }
-    sig.params.push(AbiParam::new(ptr_type()));
-    let func_id = jit_module
-        .declare_function("__cranelift_trsm", Linkage::Import, &sig)
-        .map_err(|e| format!("declare trsm: {e}"))?;
-    let func_ref = jit_module.declare_func_in_func(func_id, builder.func);
-
     let m_val = builder.ins().iconst(types::I64, m as i64);
     let n_imm = builder.ins().iconst(types::I64, n as i64);
     let nrhs_val = builder.ins().iconst(types::I64, nrhs as i64);
     let uplo_val = builder.ins().iconst(types::I8, uplo as i64);
     let diag_val = builder.ins().iconst(types::I8, diag as i64);
-    builder.ins().call(
-        func_ref,
-        &[
-            base, b_ptr, m_val, n_imm, nrhs_val, uplo_val, diag_val, out_ptr,
-        ],
-    );
+    let pt = ptr_type();
+    lapack_call(builder, jit_module, "__cranelift_trsm",
+        &[pt, pt, types::I64, types::I64, types::I64, types::I8, types::I8, pt],
+        &[base, b_ptr, m_val, n_imm, nrhs_val, uplo_val, diag_val, out_ptr])?;
 
     Ok(vec![load_f64_vals(builder, m * nrhs, base, out_off)])
 }
@@ -5665,64 +5282,34 @@ fn lower_trsm_custom_call(
 fn lower_cholesky_custom_call(
     builder: &mut FunctionBuilder,
     operands: &[ValueId],
-    result_types: &[TensorType],
+    _result_types: &[TensorType],
     value_map: &HashMap<ValueId, TensorVals>,
     _type_map: &HashMap<ValueId, TensorType>,
     jit_module: &mut JITModule,
 ) -> Result<Vec<TensorVals>, String> {
     let a_vals = get_vals(value_map, &operands[0])?;
-    let n = (a_vals.len() as f64).sqrt() as usize;
-    if n * n != a_vals.len() {
-        return Err(format!(
-            "Cholesky: non-square matrix ({} elements)",
-            a_vals.len()
-        ));
-    }
+    let n = require_square("Cholesky", a_vals)?;
+    let f8 = 8;
 
-    let a_bytes = n * n * 8;
-    let l_bytes = n * n * 8;
-    let info_bytes = 4;
-    let total = a_bytes + l_bytes + info_bytes;
-
-    let ss = builder.create_sized_stack_slot(StackSlotData::new(
-        StackSlotKind::ExplicitSlot,
-        total as u32,
-        3,
-    ));
-    let base = builder.ins().stack_addr(ptr_type(), ss, 0);
-
+    let (a_b, l_b, info_b) = (n * n * f8, n * n * f8, 4);
+    let (_, base) = lapack_slot(builder, a_b + l_b + info_b);
     store_f64_vals(builder, a_vals, base, 0);
 
-    let l_off = a_bytes as i32;
-    let info_off = (a_bytes + l_bytes) as i32;
+    let l_off = a_b as i32;
+    let info_off = (a_b + l_b) as i32;
     let l_ptr = builder.ins().iadd_imm(base, l_off as i64);
     let info_ptr = builder.ins().iadd_imm(base, info_off as i64);
 
-    // fn(a_ptr, n, l_ptr, info_ptr)
-    let mut sig = jit_module.make_signature();
-    sig.call_conv = jit_module.isa().default_call_conv();
-    sig.params.push(AbiParam::new(ptr_type()));
-    sig.params.push(AbiParam::new(types::I64));
-    sig.params.push(AbiParam::new(ptr_type()));
-    sig.params.push(AbiParam::new(ptr_type()));
-    let func_id = jit_module
-        .declare_function("__cranelift_cholesky", Linkage::Import, &sig)
-        .map_err(|e| format!("declare cholesky: {e}"))?;
-    let func_ref = jit_module.declare_func_in_func(func_id, builder.func);
-
     let n_val = builder.ins().iconst(types::I64, n as i64);
-    builder
-        .ins()
-        .call(func_ref, &[base, n_val, l_ptr, info_ptr]);
+    let pt = ptr_type();
+    lapack_call(builder, jit_module, "__cranelift_cholesky",
+        &[pt, types::I64, pt, pt],
+        &[base, n_val, l_ptr, info_ptr])?;
 
-    let mut result_groups = Vec::new();
-    result_groups.push(load_f64_vals(builder, n * n, base, l_off));
-    let info_val = builder
-        .ins()
-        .load(types::I32, MemFlags::trusted(), base, info_off);
-    result_groups.push(vec![info_val]);
-
-    Ok(result_groups)
+    Ok(vec![
+        load_f64_vals(builder, n * n, base, l_off),
+        vec![load_info_i32(builder, base, info_off)],
+    ])
 }
 
 fn lower_qr_custom_call(
@@ -5740,51 +5327,28 @@ fn lower_qr_custom_call(
     } else {
         return Err("QR: expected 2D result".to_string());
     };
+    let f8 = 8;
 
-    let a_bytes = m * n * 8;
-    let qr_bytes = m * n * 8;
-    let tau_bytes = m.min(n) * 8;
-    let total = a_bytes + qr_bytes + tau_bytes;
-
-    let ss = builder.create_sized_stack_slot(StackSlotData::new(
-        StackSlotKind::ExplicitSlot,
-        total as u32,
-        3,
-    ));
-    let base = builder.ins().stack_addr(ptr_type(), ss, 0);
-
+    let (a_b, qr_b, tau_b) = (m * n * f8, m * n * f8, m.min(n) * f8);
+    let (_, base) = lapack_slot(builder, a_b + qr_b + tau_b);
     store_f64_vals(builder, a_vals, base, 0);
 
-    let qr_off = a_bytes as i32;
-    let tau_off = (a_bytes + qr_bytes) as i32;
+    let qr_off = a_b as i32;
+    let tau_off = (a_b + qr_b) as i32;
     let qr_ptr = builder.ins().iadd_imm(base, qr_off as i64);
     let tau_ptr = builder.ins().iadd_imm(base, tau_off as i64);
 
-    // fn(a_ptr, m, n, qr_ptr, tau_ptr)
-    let mut sig = jit_module.make_signature();
-    sig.call_conv = jit_module.isa().default_call_conv();
-    sig.params.push(AbiParam::new(ptr_type()));
-    sig.params.push(AbiParam::new(types::I64));
-    sig.params.push(AbiParam::new(types::I64));
-    sig.params.push(AbiParam::new(ptr_type()));
-    sig.params.push(AbiParam::new(ptr_type()));
-    let func_id = jit_module
-        .declare_function("__cranelift_qr", Linkage::Import, &sig)
-        .map_err(|e| format!("declare qr: {e}"))?;
-    let func_ref = jit_module.declare_func_in_func(func_id, builder.func);
-
     let m_val = builder.ins().iconst(types::I64, m as i64);
     let n_val = builder.ins().iconst(types::I64, n as i64);
-    builder
-        .ins()
-        .call(func_ref, &[base, m_val, n_val, qr_ptr, tau_ptr]);
+    let pt = ptr_type();
+    lapack_call(builder, jit_module, "__cranelift_qr",
+        &[pt, types::I64, types::I64, pt, pt],
+        &[base, m_val, n_val, qr_ptr, tau_ptr])?;
 
-    let result_groups = vec![
+    Ok(vec![
         load_f64_vals(builder, m * n, base, qr_off),
         load_f64_vals(builder, m.min(n), base, tau_off),
-    ];
-
-    Ok(result_groups)
+    ])
 }
 
 fn lower_orgqr_custom_call(
@@ -5804,45 +5368,23 @@ fn lower_orgqr_custom_call(
     } else {
         return Err("ORGQR: expected 2D result".to_string());
     };
+    let f8 = 8;
 
-    let qr_bytes = qr_vals.len() * 8;
-    let tau_bytes = tau_vals.len() * 8;
-    let q_bytes = m * n * 8;
-    let total = qr_bytes + tau_bytes + q_bytes;
-
-    let ss = builder.create_sized_stack_slot(StackSlotData::new(
-        StackSlotKind::ExplicitSlot,
-        total as u32,
-        3,
-    ));
-    let base = builder.ins().stack_addr(ptr_type(), ss, 0);
-
+    let (qr_b, tau_b, q_b) = (qr_vals.len() * f8, tau_vals.len() * f8, m * n * f8);
+    let (_, base) = lapack_slot(builder, qr_b + tau_b + q_b);
     store_f64_vals(builder, qr_vals, base, 0);
-    let tau_off = qr_bytes as i32;
+    let tau_off = qr_b as i32;
     store_f64_vals(builder, tau_vals, base, tau_off);
-    let q_off = (qr_bytes + tau_bytes) as i32;
-
+    let q_off = (qr_b + tau_b) as i32;
     let tau_ptr = builder.ins().iadd_imm(base, tau_off as i64);
     let q_ptr = builder.ins().iadd_imm(base, q_off as i64);
 
-    // fn(qr_ptr, tau_ptr, m, n, q_ptr)
-    let mut sig = jit_module.make_signature();
-    sig.call_conv = jit_module.isa().default_call_conv();
-    sig.params.push(AbiParam::new(ptr_type()));
-    sig.params.push(AbiParam::new(ptr_type()));
-    sig.params.push(AbiParam::new(types::I64));
-    sig.params.push(AbiParam::new(types::I64));
-    sig.params.push(AbiParam::new(ptr_type()));
-    let func_id = jit_module
-        .declare_function("__cranelift_orgqr", Linkage::Import, &sig)
-        .map_err(|e| format!("declare orgqr: {e}"))?;
-    let func_ref = jit_module.declare_func_in_func(func_id, builder.func);
-
     let m_val = builder.ins().iconst(types::I64, m as i64);
     let n_val = builder.ins().iconst(types::I64, n as i64);
-    builder
-        .ins()
-        .call(func_ref, &[base, tau_ptr, m_val, n_val, q_ptr]);
+    let pt = ptr_type();
+    lapack_call(builder, jit_module, "__cranelift_orgqr",
+        &[pt, pt, types::I64, types::I64, pt],
+        &[base, tau_ptr, m_val, n_val, q_ptr])?;
 
     Ok(vec![load_f64_vals(builder, m * n, base, q_off)])
 }
@@ -5850,68 +5392,35 @@ fn lower_orgqr_custom_call(
 fn lower_syevd_custom_call(
     builder: &mut FunctionBuilder,
     operands: &[ValueId],
-    result_types: &[TensorType],
+    _result_types: &[TensorType],
     value_map: &HashMap<ValueId, TensorVals>,
     _type_map: &HashMap<ValueId, TensorType>,
     jit_module: &mut JITModule,
 ) -> Result<Vec<TensorVals>, String> {
     let a_vals = get_vals(value_map, &operands[0])?;
-    let n = (a_vals.len() as f64).sqrt() as usize;
-    if n * n != a_vals.len() {
-        return Err(format!(
-            "SYEVD: non-square matrix ({} elements)",
-            a_vals.len()
-        ));
-    }
+    let n = require_square("SYEVD", a_vals)?;
+    let f8 = 8;
 
-    let a_bytes = n * n * 8;
-    let eigvecs_bytes = n * n * 8;
-    let eigvals_bytes = n * 8;
-    let info_bytes = 4;
-    let total = a_bytes + eigvecs_bytes + eigvals_bytes + info_bytes;
-
-    let ss = builder.create_sized_stack_slot(StackSlotData::new(
-        StackSlotKind::ExplicitSlot,
-        total as u32,
-        3,
-    ));
-    let base = builder.ins().stack_addr(ptr_type(), ss, 0);
-
+    let (a_b, ev_b, ew_b, info_b) = (n * n * f8, n * n * f8, n * f8, 4);
+    let (_, base) = lapack_slot(builder, a_b + ev_b + ew_b + info_b);
     store_f64_vals(builder, a_vals, base, 0);
 
-    let eigvecs_off = a_bytes as i32;
-    let eigvals_off = (a_bytes + eigvecs_bytes) as i32;
-    let info_off = (a_bytes + eigvecs_bytes + eigvals_bytes) as i32;
-
-    let eigvecs_ptr = builder.ins().iadd_imm(base, eigvecs_off as i64);
-    let eigvals_ptr = builder.ins().iadd_imm(base, eigvals_off as i64);
+    let ev_off = a_b as i32;
+    let ew_off = (a_b + ev_b) as i32;
+    let info_off = (a_b + ev_b + ew_b) as i32;
+    let ev_ptr = builder.ins().iadd_imm(base, ev_off as i64);
+    let ew_ptr = builder.ins().iadd_imm(base, ew_off as i64);
     let info_ptr = builder.ins().iadd_imm(base, info_off as i64);
 
-    // fn(a_ptr, n, eigvecs_ptr, eigvals_ptr, info_ptr)
-    let mut sig = jit_module.make_signature();
-    sig.call_conv = jit_module.isa().default_call_conv();
-    sig.params.push(AbiParam::new(ptr_type()));
-    sig.params.push(AbiParam::new(types::I64));
-    for _ in 0..3 {
-        sig.params.push(AbiParam::new(ptr_type()));
-    }
-    let func_id = jit_module
-        .declare_function("__cranelift_syevd", Linkage::Import, &sig)
-        .map_err(|e| format!("declare syevd: {e}"))?;
-    let func_ref = jit_module.declare_func_in_func(func_id, builder.func);
-
     let n_val = builder.ins().iconst(types::I64, n as i64);
-    builder
-        .ins()
-        .call(func_ref, &[base, n_val, eigvecs_ptr, eigvals_ptr, info_ptr]);
+    let pt = ptr_type();
+    lapack_call(builder, jit_module, "__cranelift_syevd",
+        &[pt, types::I64, pt, pt, pt],
+        &[base, n_val, ev_ptr, ew_ptr, info_ptr])?;
 
-    let mut result_groups = Vec::new();
-    result_groups.push(load_f64_vals(builder, n * n, base, eigvecs_off));
-    result_groups.push(load_f64_vals(builder, n, base, eigvals_off));
-    let info_val = builder
-        .ins()
-        .load(types::I32, MemFlags::trusted(), base, info_off);
-    result_groups.push(vec![info_val]);
-
-    Ok(result_groups)
+    Ok(vec![
+        load_f64_vals(builder, n * n, base, ev_off),
+        load_f64_vals(builder, n, base, ew_off),
+        vec![load_info_i32(builder, base, info_off)],
+    ])
 }

@@ -129,26 +129,11 @@ fn verify_checkpoint_impl() {
     for i in 0..n_compare {
         let got = &cranelift_outputs[i][..xla_outputs[i].len()];
         let want = &xla_outputs[i];
-        let n = got.len() / 8;
-        let mut max_abs = 0.0f64;
-        let mut max_rel = 0.0f64;
-        let mut first_fail_idx = None;
-        for j in 0..n {
-            let g = f64::from_le_bytes(got[j * 8..(j + 1) * 8].try_into().unwrap());
-            let w = f64::from_le_bytes(want[j * 8..(j + 1) * 8].try_into().unwrap());
-            let abs_d = (g - w).abs();
-            let rel_d = if w.abs() > 1e-15 { abs_d / w.abs() } else { abs_d };
-            max_abs = max_abs.max(abs_d);
-            max_rel = max_rel.max(rel_d);
-            if abs_d > 1e-8 && rel_d > 1e-6 && first_fail_idx.is_none() {
-                first_fail_idx = Some((j, g, w));
-            }
-        }
-        if let Some((j, g, w)) = first_fail_idx {
-            eprintln!("output {i}: FAIL at elem {j}/{n}: got={g}, want={w}, max_abs={max_abs:.3e}, max_rel={max_rel:.3e}");
+        let result = std::panic::catch_unwind(|| {
+            compare_f64_buffers(got, want, i, 1e-6, 1e-8);
+        });
+        if result.is_err() {
             failures.push(i);
-        } else {
-            eprintln!("output {i}: OK ({n} elems, max_abs={max_abs:.3e}, max_rel={max_rel:.3e})");
         }
     }
     if !failures.is_empty() {

@@ -29,7 +29,7 @@ fn run_cube_sat_single_tick() {
     let mut input_bufs: Vec<Vec<u8>> = Vec::new();
     for (_vid, ty) in &main_func.params {
         let byte_sz = ty.byte_size();
-        let mut buf = vec![0u8; byte_sz];
+        let buf = vec![0u8; byte_sz];
         input_bufs.push(buf);
     }
 

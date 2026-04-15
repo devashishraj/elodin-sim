@@ -1240,7 +1240,7 @@ fn parse_scatter_op(
         let line: &str = take_till(0.., '\n').parse_next(input)?;
         let _ = opt('\n').parse_next(input)?;
         let trimmed = line.trim();
-        if trimmed.starts_with("}) :") || trimmed.starts_with("}) :") {
+        if trimmed.starts_with("}) :") {
             let ty = parse_final_type(trimmed);
             let values = make_values(ctx, result_names, vec![ty]);
             return Ok(Some(InstrResult {
@@ -2080,13 +2080,6 @@ impl ValueCtx {
         if let Some(&id) = self.name_to_id.get(name) {
             return id;
         }
-        let id = ValueId(self.next_id);
-        self.next_id += 1;
-        self.name_to_id.insert(name.to_string(), id);
-        id
-    }
-
-    fn define(&mut self, name: &str) -> ValueId {
         let id = ValueId(self.next_id);
         self.next_id += 1;
         self.name_to_id.insert(name.to_string(), id);

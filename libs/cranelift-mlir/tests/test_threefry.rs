@@ -1,37 +1,8 @@
+mod common;
+use common::*;
+
 use cranelift_mlir::lower::compile_module;
 use cranelift_mlir::parser::parse_module;
-
-fn u32_buf(vals: &[u32]) -> Vec<u8> {
-    vals.iter().flat_map(|v| v.to_le_bytes()).collect()
-}
-
-fn read_u32s(buf: &[u8]) -> Vec<u32> {
-    buf.chunks_exact(4)
-        .map(|c| u32::from_le_bytes(c.try_into().unwrap()))
-        .collect()
-}
-
-fn i64_buf(vals: &[i64]) -> Vec<u8> {
-    vals.iter().flat_map(|v| v.to_le_bytes()).collect()
-}
-
-fn run_mlir(mlir: &str, inputs: &[&[u8]], output_sizes: &[usize]) -> Vec<Vec<u8>> {
-    let module = parse_module(mlir).expect("parse failed");
-    let compiled = compile_module(&module).expect("compile failed");
-    let fn_ptr = compiled.get_main_fn();
-    let tick_fn: unsafe extern "C" fn(*const *const u8, *mut *mut u8) =
-        unsafe { std::mem::transmute(fn_ptr) };
-
-    let input_ptrs: Vec<*const u8> = inputs.iter().map(|b| b.as_ptr()).collect();
-    let mut output_bufs: Vec<Vec<u8>> = output_sizes.iter().map(|&sz| vec![0u8; sz]).collect();
-    let mut output_ptrs: Vec<*mut u8> = output_bufs.iter_mut().map(|b| b.as_mut_ptr()).collect();
-
-    unsafe {
-        tick_fn(input_ptrs.as_ptr(), output_ptrs.as_mut_ptr());
-    }
-
-    output_bufs
-}
 
 #[test]
 fn test_threefry_round() {
@@ -41,21 +12,14 @@ fn test_threefry_round() {
     let func = module
         .get_func("closed_call")
         .expect("closed_call not found");
-    eprintln!(
-        "closed_call params: {}",
-        func.params
-            .iter()
-            .map(|(_, t)| format!("{t}"))
-            .collect::<Vec<_>>()
-            .join(", ")
+    assert!(!func.params.is_empty(), "closed_call should have params");
+    assert!(
+        !func.result_types.is_empty(),
+        "closed_call should have results"
     );
-    eprintln!(
-        "closed_call result_types: {}",
-        func.result_types
-            .iter()
-            .map(|t| format!("{t}"))
-            .collect::<Vec<_>>()
-            .join(", ")
+    assert!(
+        !func.body.is_empty(),
+        "closed_call should have a non-empty body"
     );
 }
 
@@ -64,38 +28,21 @@ fn test_inner_prng() {
     let mlir = include_str!("../testdata/ball.stablehlo.mlir");
 
     let module = parse_module(mlir).expect("parse failed");
-    let compiled = compile_module(&module).expect("compile failed");
+    let _compiled = compile_module(&module).expect("compile failed");
 
     let inner_func = module.get_func("inner").expect("inner not found");
-    eprintln!(
-        "inner params: {}",
-        inner_func
-            .params
-            .iter()
-            .map(|(_, t)| format!("{t}"))
-            .collect::<Vec<_>>()
-            .join(", ")
+    assert!(
+        !inner_func.params.is_empty(),
+        "inner should have params"
     );
-    eprintln!(
-        "inner result_types: {}",
-        inner_func
-            .result_types
-            .iter()
-            .map(|t| format!("{t}"))
-            .collect::<Vec<_>>()
-            .join(", ")
+    assert!(
+        !inner_func.result_types.is_empty(),
+        "inner should have results"
     );
 
     let main_func = module.main_func().unwrap();
-    eprintln!(
-        "main params: {}",
-        main_func
-            .params
-            .iter()
-            .map(|(_, t)| format!("{t}"))
-            .collect::<Vec<_>>()
-            .join(", ")
-    );
+    assert!(main_func.is_public);
+    assert!(!main_func.params.is_empty());
 }
 
 #[test]

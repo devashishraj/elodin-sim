@@ -1,139 +1,5 @@
-use cranelift_mlir::lower::{CompileConfig, compile_module, compile_module_with_config};
-use cranelift_mlir::parser::parse_module;
-
-type TickFn = unsafe extern "C" fn(*const *const u8, *mut *mut u8);
-
-fn run_mlir(mlir: &str, inputs: &[&[u8]], output_sizes: &[usize]) -> Vec<Vec<u8>> {
-    let module = parse_module(mlir).expect("parse failed");
-    let compiled = compile_module(&module).expect("compile failed");
-    let fn_ptr = compiled.get_main_fn();
-    let tick_fn: TickFn = unsafe { std::mem::transmute(fn_ptr) };
-
-    let input_ptrs: Vec<*const u8> = inputs.iter().map(|b| b.as_ptr()).collect();
-    let mut output_bufs: Vec<Vec<u8>> = output_sizes.iter().map(|&sz| vec![0u8; sz]).collect();
-    let mut output_ptrs: Vec<*mut u8> = output_bufs.iter_mut().map(|b| b.as_mut_ptr()).collect();
-
-    unsafe { tick_fn(input_ptrs.as_ptr(), output_ptrs.as_mut_ptr()) };
-
-    output_bufs
-}
-
-fn run_mlir_mem(mlir: &str, inputs: &[&[u8]], output_sizes: &[usize]) -> Vec<Vec<u8>> {
-    let module = parse_module(mlir).expect("parse failed");
-    let config = CompileConfig {
-        force_pointer_abi_main: true,
-    };
-    let compiled =
-        compile_module_with_config(&module, config).expect(&format!("compile failed (mem path)"));
-    let fn_ptr = compiled.get_main_fn();
-    let tick_fn: TickFn = unsafe { std::mem::transmute(fn_ptr) };
-
-    let input_ptrs: Vec<*const u8> = inputs.iter().map(|b| b.as_ptr()).collect();
-    let mut output_bufs: Vec<Vec<u8>> = output_sizes.iter().map(|&sz| vec![0u8; sz]).collect();
-    let mut output_ptrs: Vec<*mut u8> = output_bufs.iter_mut().map(|b| b.as_mut_ptr()).collect();
-
-    unsafe { tick_fn(input_ptrs.as_ptr(), output_ptrs.as_mut_ptr()) };
-
-    output_bufs
-}
-
-fn f64_buf(vals: &[f64]) -> Vec<u8> {
-    vals.iter().flat_map(|v| v.to_le_bytes()).collect()
-}
-
-fn i64_buf(vals: &[i64]) -> Vec<u8> {
-    vals.iter().flat_map(|v| v.to_le_bytes()).collect()
-}
-
-fn i32_buf(vals: &[i32]) -> Vec<u8> {
-    vals.iter().flat_map(|v| v.to_le_bytes()).collect()
-}
-
-fn read_f64s(buf: &[u8]) -> Vec<f64> {
-    buf.chunks_exact(8)
-        .map(|c| f64::from_le_bytes(c.try_into().unwrap()))
-        .collect()
-}
-
-fn read_i64s(buf: &[u8]) -> Vec<i64> {
-    buf.chunks_exact(8)
-        .map(|c| i64::from_le_bytes(c.try_into().unwrap()))
-        .collect()
-}
-
-fn assert_f64_close(actual: f64, expected: f64) {
-    let diff = (actual - expected).abs();
-    let denom = expected.abs().max(1e-15);
-    assert!(
-        diff / denom < 1e-10,
-        "expected {expected}, got {actual} (relative error: {:.2e})",
-        diff / denom
-    );
-}
-
-fn assert_f64s_close(actual: &[f64], expected: &[f64]) {
-    assert_eq!(actual.len(), expected.len(), "length mismatch");
-    for (i, (&a, &e)) in actual.iter().zip(expected.iter()).enumerate() {
-        let diff = (a - e).abs();
-        let denom = e.abs().max(1e-15);
-        assert!(
-            diff / denom < 1e-10,
-            "element {i}: expected {e}, got {a} (relative error: {:.2e})",
-            diff / denom
-        );
-    }
-}
-
-fn reference_erf_inv(x: f64) -> f64 {
-    let a = x.abs();
-    if a >= 1.0 {
-        return if x > 0.0 {
-            f64::INFINITY
-        } else {
-            f64::NEG_INFINITY
-        };
-    }
-    if a <= 0.7 {
-        let x2 = x * x;
-        let r = x
-            * (1.0
-                + x2 * (-0.14110320156679688
-                    + x2 * (0.00536696519760513 + x2 * (-0.00012490409090537))));
-        let s = 1.0
-            + x2 * (-0.46997548816375946 + x2 * (0.03894404780498262 + x2 * -0.00056807290818498));
-        r / s
-    } else {
-        let w = (-((1.0 - a) / 2.0).ln()).sqrt();
-        let r = if w < 2.5 {
-            let w1 = w - 1.6;
-            (0.15504_70003_11693
-                + w1 * (1.24016_81885_33806
-                    + w1 * (0.22667_58861_00498
-                        + w1 * (-0.02552_42513_12362
-                            + w1 * (-0.00491_55570_37938 + w1 * 0.00033_70766_71552)))))
-                / (1.0
-                    + w1 * (0.39145_53073_58388
-                        + w1 * (0.06580_20454_42746
-                            + w1 * (-0.00597_53879_79153
-                                + w1 * (-0.00041_52271_33582 + w1 * 0.00001_65478_12831)))))
-        } else {
-            let w1 = w - 3.0;
-            (1.001_674_066_314_44
-                + w1 * (4.42945_75023_12524
-                    + w1 * (3.37760_09990_92073
-                        + w1 * (-0.32709_33711_11814
-                            + w1 * (-0.81891_49028_77613
-                                + w1 * (-0.17256_76541_42671 + w1 * 0.00108_00138_76602))))))
-                / (1.0
-                    + w1 * (3.54388_92476_56405
-                        + w1 * (3.84683_82938_07354
-                            + w1 * (0.51600_22689_27052
-                                + w1 * (-0.41951_56654_41421
-                                    + w1 * (-0.05508_77290_78127 + w1 * 0.00312_06800_28513))))))
-        };
-        if x < 0.0 { -r } else { r }
-    }
-}
+mod common;
+use common::*;
 
 // ---- LAPACK ops ----
 
@@ -544,10 +410,6 @@ module @module {
 #[ignore = "known issue: 3D gather/broadcast path produces wrong results for matrix-RHS solve"]
 fn test_linalg_iree_one_tick() {
     let mlir = include_str!("../testdata/linalg-iree.stablehlo.mlir");
-    let module = cranelift_mlir::parser::parse_module(mlir).expect("parse failed");
-    let compiled = cranelift_mlir::lower::compile_module(&module).expect("compile failed");
-    let fn_ptr = compiled.get_main_fn();
-    let tick_fn: TickFn = unsafe { std::mem::transmute(fn_ptr) };
 
     // Inputs match the world() spawn in sim.py:
     // arg0: tick (i64) = 0
@@ -1106,7 +968,7 @@ module @module {
 }
 "#;
     // Input: 2x3x4 = 24 elements, row-major: group0=[0..12), group1=[12..24)
-    let mut input: Vec<f64> = (0..24).map(|i| i as f64).collect();
+    let input: Vec<f64> = (0..24).map(|i| i as f64).collect();
     let in0 = f64_buf(&input);
     let out = run_mlir(mlir, &[&in0], &[192]);
     let result = read_f64s(&out[0]);
